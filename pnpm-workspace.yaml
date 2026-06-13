@@ -1,0 +1,6 @@
+allowBuilds:
+  better-sqlite3: true
+  cloudflared: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true

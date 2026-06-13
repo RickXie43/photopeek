@@ -1,0 +1,15 @@
+:root {
+  --color-background: #ffffff;
+  --color-text: #1d1d1f;
+  --color-sidebar: #f5f5f5;
+  --color-border: #edeceb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: #1e1e1e;
+    --color-text: #f5f5f7;
+    --color-sidebar: #2b2b2b;
+    --color-border: #424242;
+  }
+}
