@@ -138,6 +138,10 @@ importers:
       vite:
         specifier: ^7.2.6
         version: 7.3.5(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)
+    optionalDependencies:
+      '@img/sharp-win32-x64':
+        specifier: ^0.35.0
+        version: 0.35.0
 
 packages:
 

@@ -25,6 +25,8 @@ interface TunnelStatusEvent {
   eventId: string
   active: boolean
   url?: string
+  status?: 'inactive' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
+  statusText?: string
 }
 
 interface ShareApi {

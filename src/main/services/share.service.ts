@@ -3,17 +3,36 @@ import { WebSocketServer, WebSocket } from 'ws'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, app } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db/connection'
 import { getEventDir, getLibraryPath } from './library.service'
 import { syncEventJsonPhotos } from '../ipc/event.handler'
+import sharp from 'sharp'
 import Bonjour from 'bonjour-service'
-import { Tunnel } from 'cloudflared'
+import { Tunnel, use as setCloudflaredBin } from 'cloudflared'
+
+// When packaged in asar, child_process.spawn() cannot resolve the asar-internal path for the
+// cloudflared binary. Override to the real filesystem path (app.asar.unpacked).
+if (app.isPackaged) {
+  const unpackedBin = path.join(
+    app.getAppPath().replace('.asar', '.asar.unpacked'),
+    'node_modules',
+    'cloudflared',
+    'bin',
+    process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared',
+  )
+  if (fs.existsSync(unpackedBin)) {
+    setCloudflaredBin(unpackedBin)
+    console.log('[Share] Using unpacked cloudflared binary:', unpackedBin)
+  }
+}
 
 interface TunnelInfo {
   tunnel: Tunnel
   url: string
+  reconnectAttempts: number
+  healthCheckInterval?: ReturnType<typeof setInterval>
 }
 
 /** A connected web user */
@@ -205,6 +224,10 @@ input,button,select{font-family:inherit}
 .detail-actions button:active{transform:translateY(0)}
 .detail-actions button.loading{opacity:.5;pointer-events:none}
 
+/* Original image loading percentage */
+.original-progress{position:absolute;bottom:56px;left:16px;right:16px;z-index:10;display:flex;align-items:center;justify-content:flex-end;pointer-events:none}
+.original-progress-text{font-size:12px;color:rgba(255,255,255,.75);background:rgba(0,0,0,.4);padding:2px 10px;border-radius:10px;backdrop-filter:blur(6px)}
+
 /* Tag filter bar */
 .tag-filter-bar{display:flex;align-items:center;gap:6px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--surface2);overflow-x:auto;flex-shrink:0}
 .tag-filter-bar .filter-label{font-size:11px;color:var(--text2);white-space:nowrap;margin-right:4px}
@@ -308,6 +331,10 @@ input,button,select{font-family:inherit}
       <button id="view-original-btn">📷 原图</button>
       <button id="save-image-btn">💾 保存</button>
     </div>
+    <!-- Original image loading progress (percentage text only) -->
+    <div id="original-progress" class="original-progress" style="display:none">
+      <span class="original-progress-text" id="original-progress-text">0%</span>
+    </div>
   </div>
   <div class="detail-tags-bar" id="detail-tags-bar">
     <span class="detail-tags-label">🏷️</span>
@@ -330,7 +357,6 @@ input,button,select{font-family:inherit}
   let currentPhotoIndex = -1
   let reconnectTimer = null
   let connectedUsers = []
-  let originalLoadedMap = {} // photoId -> true/false
   let shutdownFlag = false
   let activeFilterTagIds = new Set() // Set of tag IDs, empty = show all
 
@@ -361,6 +387,8 @@ input,button,select{font-family:inherit}
   const photoCountLabel = document.getElementById('photo-count-label')
   const viewOriginalBtn = document.getElementById('view-original-btn')
   const saveImageBtn = document.getElementById('save-image-btn')
+  const originalProgress = document.getElementById('original-progress')
+  const originalProgressText = document.getElementById('original-progress-text')
   const tagFilterBar = document.getElementById('tag-filter-bar')
   const saveAllBtn = document.getElementById('save-all-btn')
 
@@ -515,6 +543,7 @@ input,button,select{font-family:inherit}
   function closeDetail() {
     photoDetail.classList.remove('show')
     currentPhotoIndex = -1
+    originalProgress.style.display = 'none'
   }
 
   function renderDetail() {
@@ -525,29 +554,25 @@ input,button,select{font-family:inherit}
 
     detailImage.classList.remove('loaded')
     detailImage.classList.add('fade-in')
-    // Show loading state
-    viewOriginalBtn.textContent = '⏳ 加载原图...'
-    viewOriginalBtn.classList.add('loading')
-    viewOriginalBtn.disabled = true
-    // Load original photo — only when this photo is opened
-    detailImage.src = '/photo/' + id
+
+    // Track whether original has been loaded for this photo
+    let originalLoaded = false
+
+    // Load medium-quality image first (faster than original)
+    viewOriginalBtn.textContent = '📷 加载原图'
+    viewOriginalBtn.classList.remove('loading')
+    viewOriginalBtn.disabled = false
+    detailImage.src = '/medium/' + id
     detailImage.onload = () => {
       detailImage.classList.add('loaded')
-      originalLoadedMap[id] = true
-      viewOriginalBtn.classList.remove('loading')
-      viewOriginalBtn.textContent = '✅ 原图'
-      viewOriginalBtn.disabled = true
     }
     detailImage.onerror = () => {
-      // Fallback to thumbnail if original fails
-      console.warn('Failed to load original, falling back to thumbnail')
+      // Fallback to thumbnail if medium fails
+      console.warn('Failed to load medium, falling back to thumbnail')
       detailImage.src = '/thumbnail/' + id
       detailImage.onload = () => { detailImage.classList.add('loaded') }
-      originalLoadedMap[id] = false
-      viewOriginalBtn.classList.remove('loading')
-      viewOriginalBtn.textContent = '📇 缩略图'
-      viewOriginalBtn.disabled = true
     }
+
     detailPhotoName.textContent = photo.fileName || ''
     detailCounter.textContent = (currentPhotoIndex + 1) + ' / ' + photoOrder.length
     detailCounterBadge.textContent = (currentPhotoIndex + 1) + ' / ' + photoOrder.length
@@ -572,8 +597,73 @@ input,button,select{font-family:inherit}
       toggleNicknameTag(id)
     }
 
-    // View original button — just a status indicator (original loads automatically)
-    viewOriginalBtn.onclick = null
+    // "View Original" button — load full-resolution image
+    viewOriginalBtn.onclick = () => {
+      if (originalLoaded) return
+
+      viewOriginalBtn.textContent = '⏳ 加载原图...'
+      viewOriginalBtn.classList.add('loading')
+      viewOriginalBtn.disabled = true
+      originalProgress.style.display = 'flex'
+      originalProgressText.textContent = '0%'
+
+      // Try XHR with progress tracking; fall back to direct <img> on any failure
+      const xhr = new XMLHttpRequest()
+      xhr.responseType = 'blob'
+
+      xhr.onprogress = (e) => {
+        if (e.lengthComputable) {
+          originalProgressText.textContent = Math.round((e.loaded / e.total) * 100) + '%'
+        } else {
+          // Content-Length unknown (e.g. tunnel), show indeterminate text
+          originalProgressText.textContent = '加载中...'
+        }
+      }
+
+      xhr.onload = () => {
+        const blob = xhr.response
+        if (!blob || blob.size === 0) { loadDirect(); return }
+        const blobUrl = URL.createObjectURL(blob)
+        detailImage.onload = () => {
+          originalLoaded = true
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '✅ 原图'
+          viewOriginalBtn.disabled = true
+          originalProgressText.textContent = '100%'
+          setTimeout(() => { originalProgress.style.display = 'none' }, 1200)
+        }
+        detailImage.onerror = () => {
+          URL.revokeObjectURL(blobUrl)
+          loadDirect()
+        }
+        detailImage.src = blobUrl
+      }
+
+      xhr.onerror = () => loadDirect()
+      xhr.onabort = () => {}
+      xhr.timeout = 60000
+      xhr.ontimeout = () => loadDirect()
+
+      xhr.open('GET', '/photo/' + id)
+      xhr.send()
+
+      function loadDirect() {
+        originalProgress.style.display = 'none'
+        viewOriginalBtn.textContent = '⏳ 加载中...'
+        detailImage.onload = () => {
+          originalLoaded = true
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '✅ 原图'
+          viewOriginalBtn.disabled = true
+        }
+        detailImage.onerror = () => {
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '📷 加载原图'
+          viewOriginalBtn.disabled = false
+        }
+        detailImage.src = '/photo/' + id
+      }
+    }
 
     // Save image button — always saves original
     saveImageBtn.onclick = () => {
@@ -779,14 +869,15 @@ input,button,select{font-family:inherit}
   saveAllBtn.addEventListener('click', () => {
     const ids = photoOrder
     if (ids.length === 0) { showToast('没有可保存的照片'); return }
-    // Trigger ZIP download — one file, one confirmation dialog
+    showToast('📦 正在打包下载 ' + ids.length + ' 张照片...')
+    // Use <a> download — the browser handles the stream natively through the tunnel,
+    // avoiding XHR blob timeout issues for large payloads.
     const link = document.createElement('a')
     link.href = '/download-zip'
     link.download = 'photopeek.zip'
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
-    showToast('📦 正在下载 ZIP 包 (' + ids.length + ' 张照片)')
   })
 
   // ─── Thumbnail Size Slider ────────────────────────────────────────────
@@ -875,7 +966,7 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     '.json': 'application/json', '.html': 'text/html',
   }
 
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://localhost`)
     res.setHeader('Access-Control-Allow-Origin', '*')
 
@@ -908,6 +999,57 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       return
     }
 
+    // ── API: medium image (resized on-the-fly, cached) ──────────────
+    if (url.pathname.startsWith('/medium/')) {
+      const photoId = url.pathname.slice('/medium/'.length)
+      const metaPath = path.join(eventDir, 'event.json')
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+          const photoInfo = meta.photos?.[photoId]
+          if (photoInfo?.fileName) {
+            const found = findFileInDir(eventDir, photoInfo.fileName)
+            if (found) {
+              // Check/use cache
+              const cacheDir = path.join(getLibraryPath(), 'thumbnails', folderName, 'medium')
+              const cachePath = path.join(cacheDir, photoId + '.jpg')
+              if (fs.existsSync(cachePath)) {
+                res.writeHead(200, { 'Content-Type': 'image/jpeg' })
+                res.end(fs.readFileSync(cachePath))
+                return
+              }
+              // Generate and cache on-the-fly (WeChat-like compression)
+              fs.mkdirSync(cacheDir, { recursive: true })
+              const buf = await sharp(found)
+                .rotate()
+                .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+                .jpeg({ quality: 65 })
+                .toBuffer()
+              // Write cache (async, don't block response)
+              fs.writeFile(cachePath, buf, () => {})
+              res.writeHead(200, { 'Content-Type': 'image/jpeg' })
+              res.end(buf)
+              return
+            }
+          }
+        } catch (err) {
+          console.error('[Share] Medium image error:', err)
+        }
+      }
+      // Fallback: thumbnail
+      const searchDir = path.join(getLibraryPath(), 'thumbnails')
+      const found2 = findFile(searchDir, photoId)
+      if (found2) {
+        const ext = path.extname(found2).toLowerCase()
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'image/jpeg' })
+        res.end(fs.readFileSync(found2))
+        return
+      }
+      res.writeHead(404)
+      res.end('')
+      return
+    }
+
     // ── API: original photo ──────────────────────────────────────────
     if (url.pathname.startsWith('/photo/')) {
       const photoId = url.pathname.slice('/photo/'.length)
@@ -921,8 +1063,12 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
             const found = findFileInDir(eventDir, photoInfo.fileName)
             if (found) {
               const ext = path.extname(found).toLowerCase()
-              res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'image/jpeg' })
-              res.end(fs.readFileSync(found))
+              const buf = fs.readFileSync(found)
+              res.writeHead(200, {
+                'Content-Type': mimeTypes[ext] || 'image/jpeg',
+                'Content-Length': String(buf.length),
+              })
+              res.end(buf)
               return
             }
           }
@@ -955,17 +1101,20 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         for (const id of photoIds) {
           const info = meta.photos[id]
           if (!info?.fileName) continue
-          const found = findFileInDir(eventDir, info.fileName)
-          if (found) {
-            files.push({ name: info.fileName, data: fs.readFileSync(found) })
+          try {
+            const found = findFileInDir(eventDir, info.fileName)
+            if (found) {
+              files.push({ name: info.fileName, data: fs.readFileSync(found) })
+            }
+          } catch (fileErr) {
+            console.error(`[Share] Skipping ${info.fileName}:`, fileErr)
           }
         }
 
-        if (files.length === 0) { res.writeHead(404); res.end(''); return }
+        if (files.length === 0) { res.writeHead(404); res.end('No files found'); return }
 
         const zipBuf = makeZip(files)
-        const folderName = path.basename(eventDir)
-        const disposition = `attachment; filename="${encodeURIComponent(folderName)}.zip"`
+        const disposition = `attachment; filename="photopeek.zip"`
         res.writeHead(200, {
           'Content-Type': 'application/zip',
           'Content-Disposition': disposition,
@@ -973,9 +1122,12 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         })
         res.end(zipBuf)
       } catch (err) {
-        console.error('[Share] ZIP error:', err)
-        res.writeHead(500)
-        res.end('')
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[Share] ZIP error:', msg)
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+          res.end('ZIP 生成失败: ' + msg)
+        }
       }
       return
     }
@@ -1120,7 +1272,10 @@ export function getShareStatus(eventId: string): {
 
 // ─── Tunnel (Public via Cloudflare Tunnel) ─────────────────────────────────
 
-function notifyRendererTunnelStatus(eventId: string): void {
+function notifyRendererTunnelStatus(
+  eventId: string,
+  extra?: { status?: string; statusText?: string },
+): void {
   const tunnelInfo = tunnels.get(eventId)
   const wins = BrowserWindow.getAllWindows()
   for (const win of wins) {
@@ -1128,8 +1283,90 @@ function notifyRendererTunnelStatus(eventId: string): void {
       eventId,
       active: !!tunnelInfo,
       url: tunnelInfo?.url,
+      status: extra?.status || (tunnelInfo ? 'connected' : 'inactive'),
+      statusText: extra?.statusText || '',
     })
   }
+}
+
+const MAX_TUNNEL_RECONNECTS = 3
+
+function createTunnelInstance(eventId: string, port: number): Tunnel {
+  const tunnel = Tunnel.quick(`http://localhost:${port}`)
+
+  tunnel.on('url', (url: string) => {
+    let info = tunnels.get(eventId)
+    if (info) {
+      info.url = url
+      info.reconnectAttempts = 0
+    } else {
+      info = { tunnel, url, reconnectAttempts: 0 }
+      tunnels.set(eventId, info)
+    }
+    notifyRendererTunnelStatus(eventId, { status: 'connected', statusText: url })
+    tunnel.emit('verified' as any, url)
+    console.log(`[Share] Tunnel ${info.reconnectAttempts > 0 ? 're' : ''}connected for ${eventId}: ${url}`)
+  })
+
+  tunnel.on('error', (err: Error) => {
+    console.error(`[Share] Tunnel error for ${eventId}:`, err.message)
+  })
+
+  tunnel.on('exit', (code: number | null) => {
+    const info = tunnels.get(eventId)
+    if (!info || info.tunnel !== tunnel) return
+
+    console.log(`[Share] Tunnel exited for ${eventId} (code: ${code})`)
+
+    // Check if we should reconnect
+    if (code !== 0 && info.reconnectAttempts < MAX_TUNNEL_RECONNECTS) {
+      info.reconnectAttempts++
+      const attempt = info.reconnectAttempts
+      notifyRendererTunnelStatus(eventId, {
+        status: 'reconnecting',
+        statusText: `连接断开，正在重连 (${attempt}/${MAX_TUNNEL_RECONNECTS})...`,
+      })
+      console.log(`[Share] Tunnel reconnect attempt ${attempt}/${MAX_TUNNEL_RECONNECTS} for ${eventId}`)
+      // Clean up old tunnel and create new one
+      try { tunnel.stop() } catch {}
+      // Exponential backoff: 2s, 4s, 8s
+      const delay = 2000 * Math.pow(2, attempt - 1)
+      setTimeout(() => createTunnelInstance(eventId, port), delay)
+    } else {
+      // Give up
+      tunnels.delete(eventId)
+      if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
+      notifyRendererTunnelStatus(eventId, {
+        status: 'failed',
+        statusText: code === 0
+          ? '隧道已关闭'
+          : `连接失败（已重试 ${info.reconnectAttempts} 次）`,
+      })
+      console.log(`[Share] Tunnel gave up for ${eventId} (code: ${code})`)
+    }
+  })
+
+  return tunnel
+}
+
+function startTunnelHealthCheck(eventId: string): void {
+  const info = tunnels.get(eventId)
+  if (!info) return
+
+  // Check tunnel process health every 15 seconds
+  info.healthCheckInterval = setInterval(() => {
+    const current = tunnels.get(eventId)
+    if (!current) {
+      clearInterval(info.healthCheckInterval!)
+      return
+    }
+    const proc = current.tunnel.process
+    if (!proc || !proc.exitCode === null) {
+      // Process still running, all good
+      return
+    }
+    // Process exited, health check will trigger reconnect via 'exit' event
+  }, 15000)
 }
 
 export async function startTunnel(eventId: string): Promise<{ url: string }> {
@@ -1144,35 +1381,38 @@ export async function startTunnel(eventId: string): Promise<{ url: string }> {
   const port = session.port
 
   return new Promise<{ url: string }>((resolve, reject) => {
-    const tunnel = Tunnel.quick(`http://localhost:${port}`)
+    const tunnel = createTunnelInstance(eventId, port)
+    let settled = false
 
     const timeout = setTimeout(() => {
+      if (settled) return
+      settled = true
       try { tunnel.stop() } catch {}
+      const info = tunnels.get(eventId)
+      if (info) {
+        if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
+        tunnels.delete(eventId)
+      }
+      notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: '连接超时，请检查网络' })
       reject(new Error('隧道连接超时，请检查网络'))
-    }, 25000)
+    }, 30000)
 
-    tunnel.on('url', (url: string) => {
+    ;(tunnel as any).on('verified', (url: string) => {
+      if (settled) return
+      settled = true
       clearTimeout(timeout)
-      tunnels.set(eventId, { tunnel, url })
-      notifyRendererTunnelStatus(eventId)
-      console.log(`[Share] Tunnel started for ${eventId}: ${url}`)
+      const info = tunnels.get(eventId)
+      if (info) startTunnelHealthCheck(eventId)
       resolve({ url })
     })
 
-    tunnel.on('error', (err: Error) => {
-      clearTimeout(timeout)
-      console.error(`[Share] Tunnel error for ${eventId}:`, err.message)
-      // Don't reject here — the 'url' event may still come
-    })
-
     tunnel.on('exit', (code: number | null) => {
+      if (settled) return
+      settled = true
       clearTimeout(timeout)
-      // Clean up if tunnel exits unexpectedly
-      if (tunnels.get(eventId)?.tunnel === tunnel) {
-        tunnels.delete(eventId)
-        notifyRendererTunnelStatus(eventId)
-      }
-      if (code !== 0) {
+      const info = tunnels.get(eventId)
+      if (!info || info.reconnectAttempts === 0) {
+        notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: `连接失败 (code: ${code})` })
         reject(new Error(`cloudflared 进程退出 (code: ${code})`))
       }
     })
@@ -1183,11 +1423,14 @@ export function stopTunnel(eventId: string): void {
   const existing = tunnels.get(eventId)
   if (!existing) return
 
+  if (existing.healthCheckInterval) {
+    clearInterval(existing.healthCheckInterval)
+  }
   try {
     existing.tunnel.stop()
   } catch {}
   tunnels.delete(eventId)
-  notifyRendererTunnelStatus(eventId)
+  notifyRendererTunnelStatus(eventId, { status: 'inactive' })
   console.log(`[Share] Tunnel stopped for ${eventId}`)
 }
 

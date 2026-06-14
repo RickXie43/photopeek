@@ -2,6 +2,7 @@ appId: com.electron.app
 productName: photopeek
 directories:
   buildResources: build
+electronDist: node_modules/electron/dist
 files:
   - '!**/.vscode/*'
   - '!src/*'
@@ -11,6 +12,9 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+  - node_modules/sharp/**
+  - node_modules/@img/**
+  - node_modules/.pnpm/@img+sharp*/**
 win:
   executableName: photopeek
 nsis:
@@ -41,7 +45,7 @@ linux:
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
-npmRebuild: false
+npmRebuild: true
 publish:
   provider: generic
   url: https://example.com/auto-updates

@@ -55,7 +55,8 @@
 4. 任意网络环境的设备访问该地址即可浏览照片
 5. 访客双击照片可加标签，操作实时同步
 
-> ⚠️ TryCloudflare 快速隧道依赖 Cloudflare 基础设施，部分地区可能受限。如需替代方案可自行搭建 tunnel 服务器。
+> ⚠️ TryCloudflare 快速隧道依赖 Cloudflare 基础设施，部分地区可能较慢。
+> 如果速度不理想，可尝试自建 tunnel 服务器或使用 [bore](https://github.com/ekzhang/bore) 等替代方案。
 
 ### 快捷键
 

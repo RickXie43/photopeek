@@ -42,6 +42,8 @@ export function ShareDialog({
   const [tunnelStarting, setTunnelStarting] = useState(false)
   const [tunnelError, setTunnelError] = useState('')
   const [tunnelCopied, setTunnelCopied] = useState(false)
+  const [tunnelStatus, setTunnelStatus] = useState<string>('inactive')
+  const [tunnelStatusText, setTunnelStatusText] = useState('')
 
   // Generate QR code when share info is available
   useEffect(() => {
@@ -76,7 +78,10 @@ export function ShareDialog({
       if (data.eventId === targetEventId) {
         setTunnelActive(data.active)
         setTunnelUrl(data.url || '')
+        setTunnelStatus(data.status || (data.active ? 'connected' : 'inactive'))
+        setTunnelStatusText(data.statusText || '')
         if (data.active) setTunnelStarting(false)
+        if (data.status === 'failed') setTunnelStarting(false)
       }
     })
 
@@ -125,6 +130,8 @@ export function ShareDialog({
     setTunnelActive(false)
     setTunnelUrl('')
     setTunnelError('')
+    setTunnelStatus('inactive')
+    setTunnelStatusText('')
   }
 
   const handleCopy = (): void => {
@@ -162,6 +169,8 @@ export function ShareDialog({
     setTunnelActive(false)
     setTunnelUrl('')
     setTunnelError('')
+    setTunnelStatus('inactive')
+    setTunnelStatusText('')
   }
 
   const handleTunnelCopy = (): void => {
@@ -272,29 +281,72 @@ export function ShareDialog({
             )}
 
             {/* ── Public Tunnel ── */}
-            {tunnelActive ? (
-              <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 space-y-2">
-                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300">
-                  <Globe size={16} />
-                  <span className="text-sm font-medium">公网共享已开启</span>
-                  <span className="ml-auto flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
-                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
-                    连接中
+            {tunnelActive || tunnelStatus === 'reconnecting' || tunnelStatus === 'failed' ? (
+              <div className={`rounded-lg p-3 space-y-2 ${
+                tunnelStatus === 'failed'
+                  ? 'bg-red-50 dark:bg-red-900/20'
+                  : tunnelStatus === 'reconnecting'
+                  ? 'bg-yellow-50 dark:bg-yellow-900/20'
+                  : 'bg-blue-50 dark:bg-blue-900/20'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <Globe size={16} className={
+                    tunnelStatus === 'failed'
+                      ? 'text-red-600 dark:text-red-400'
+                      : tunnelStatus === 'reconnecting'
+                      ? 'text-yellow-600 dark:text-yellow-400'
+                      : 'text-blue-700 dark:text-blue-300'
+                  } />
+                  <span className={`text-sm font-medium ${
+                    tunnelStatus === 'failed'
+                      ? 'text-red-700 dark:text-red-300'
+                      : tunnelStatus === 'reconnecting'
+                      ? 'text-yellow-700 dark:text-yellow-300'
+                      : 'text-blue-700 dark:text-blue-300'
+                  }`}>
+                    {tunnelStatus === 'failed' && '公网共享失败'}
+                    {tunnelStatus === 'reconnecting' && '公网共享重连中'}
+                    {tunnelStatus === 'connected' && '公网共享已开启'}
+                    {tunnelStatus === 'inactive' && '公网共享'}
+                  </span>
+                  <span className="ml-auto flex items-center gap-1 text-xs">
+                    {tunnelStatus === 'connected' && (
+                      <><span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                        <span className="text-green-600 dark:text-green-400">已连接</span></>
+                    )}
+                    {tunnelStatus === 'reconnecting' && (
+                      <><Loader2 size={12} className="animate-spin text-yellow-500" />
+                        <span className="text-yellow-600 dark:text-yellow-400">重连中</span></>
+                    )}
+                    {tunnelStatus === 'failed' && (
+                      <span className="text-red-600 dark:text-red-400">失败</span>
+                    )}
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500 dark:text-gray-400">公网地址（无需同一网络）</span>
-                  <button
-                    onClick={handleTunnelCopy}
-                    className="text-xs text-[#007AFF] hover:underline flex items-center gap-1"
-                  >
-                    {tunnelCopied ? <Check size={12} /> : <Copy size={12} />}
-                    {tunnelCopied ? '已复制' : '复制'}
-                  </button>
-                </div>
-                <div className="bg-white dark:bg-gray-800 px-3 py-2 rounded text-xs font-mono truncate">
-                  {tunnelUrl}
-                </div>
+                {/* Status text */}
+                {tunnelStatusText && (
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    {tunnelStatusText}
+                  </div>
+                )}
+                {/* URL + copy (only when connected) */}
+                {tunnelStatus === 'connected' && tunnelUrl && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">公网地址（无需同一网络）</span>
+                      <button
+                        onClick={handleTunnelCopy}
+                        className="text-xs text-[#007AFF] hover:underline flex items-center gap-1"
+                      >
+                        {tunnelCopied ? <Check size={12} /> : <Copy size={12} />}
+                        {tunnelCopied ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                    <div className="bg-white dark:bg-gray-800 px-3 py-2 rounded text-xs font-mono truncate">
+                      {tunnelUrl}
+                    </div>
+                  </>
+                )}
                 <Button variant="danger" size="sm" onClick={handleTunnelStop} className="w-full mt-1 text-xs py-1.5">
                   <GlobeOff size={14} />
                   关闭公网共享
