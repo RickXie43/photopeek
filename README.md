@@ -1,6 +1,6 @@
 # PhotoPeek 📸
 
-一款基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
+> `v1.0.1` — [GitHub](https://github.com/Rick/PhotoPeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
 
 ## 功能特性
 
@@ -13,6 +13,8 @@
 - **局域网共享** — 一键启动 HTTP + WebSocket 共享，同网络设备浏览器即可查看
 - **公网共享** — 通过 Cloudflare Tunnel 生成公网 HTTPS 地址，无需端口转发，任意网络均可访问
 - **实时协作** — 访客可加标签、标记本人标签，操作实时同步到所有连接设备
+- **智能画质** — Web 端大图默认加载中图（1200px 微信级压缩），点击「加载原图」才加载全分辨率，并显示进度百分比
+- **打包下载** — Web 端一键打包下载原图为 ZIP
 
 ## 使用说明
 
@@ -54,6 +56,18 @@
 3. 等待几秒，生成 `https://xxxxx.trycloudflare.com` 公网地址
 4. 任意网络环境的设备访问该地址即可浏览照片
 5. 访客双击照片可加标签，操作实时同步
+
+### Web 端浏览功能
+
+共享打开后，手机/电脑浏览器访问地址即可使用以下功能：
+
+- **照片网格** — 缩略图网格浏览，可调节缩略图大小
+- **大图预览** — 点击照片进入大图模式，键盘 `←` `→` / `j` `k` 切换
+- **三档画质** — 大图默认加载**中图**（1200px，微信级压缩），点击「加载原图」按钮才加载全分辨率原图，加载时显示百分比进度
+- **标签过滤** — 按标签筛选照片
+- **双击标记** — 双击照片快速添加/移除本人昵称标签
+- **打包下载** — 一键打包下载所有照片为 ZIP
+- **实时动态** — 其他访客的打标签操作实时显示
 
 > ⚠️ TryCloudflare 快速隧道依赖 Cloudflare 基础设施，部分地区可能较慢。
 > 如果速度不理想，可尝试自建 tunnel 服务器或使用 [bore](https://github.com/ekzhang/bore) 等替代方案。
@@ -99,27 +113,36 @@ pnpm install
 
 > 注意：`cloudflared` 包需要在安装时下载二进制文件，请确保网络通畅。如遇 `pnpm` 拦截构建脚本，运行 `pnpm approve-builds cloudflared`。
 
-### 启动开发模式
+### 开发运行（不编译，热更新）
 
 ```bash
+# 启动开发模式（支持热更新，修改代码自动刷新）
 pnpm run dev
 ```
 
-### 项目构建
+开发模式下会启动 Electron 窗口+ Vite 开发服务器，代码修改后自动热更新，适合日常开发调试。
+
+### 生产构建
 
 ```bash
-# 类型检查 + Vite 编译
+# 仅编译（生成 out/ 目录，不打包安装包）
 pnpm run build
 
-# 打包为 Windows 安装程序
-pnpm run build:win
-
-# 打包为 macOS DMG
-pnpm run build:mac
-
-# 打包为 Linux (AppImage / snap / deb)
-pnpm run build:linux
+# 编译并打包为安装包（各平台）
+pnpm run build:win     # Windows (NSIS 安装程序 .exe)
+pnpm run build:mac     # macOS (DMG 安装包 .dmg)
+pnpm run build:linux   # Linux (AppImage / snap / deb)
 ```
+
+各平台构建产物输出在 `dist/` 目录：
+
+| 命令 | 输出文件 | 说明 |
+|------|---------|------|
+| `build:win` | `dist/photopeek-*-setup.exe` | Windows 安装程序 |
+| `build:mac` | `dist/photopeek-*.dmg` | macOS DMG 镜像 |
+| `build:linux` | `dist/photopeek-*.AppImage` | Linux AppImage 便携版 |
+
+> Windows 构建所需 Electron 二进制已配置为使用本地 `node_modules/electron/dist`，无需从网络下载。
 
 ### 推荐开发工具
 
