@@ -1,9 +1,10 @@
 import React from 'react'
-import { Grid3X3, ZoomIn, Columns3, Settings, Trash2, Share2 } from 'lucide-react'
+import { Grid3X3, ZoomIn, Columns3, Settings, Trash2, Share2, ArrowUpDown } from 'lucide-react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePhotoStore } from '../../stores/photoStore'
 import { cn } from '../../lib/cn'
 import { ShareDialog } from '../ui/ShareDialog'
+import type { SortBy } from '../../types/photo'
 
 export function Toolbar(): React.JSX.Element {
   const {
@@ -16,6 +17,8 @@ export function Toolbar(): React.JSX.Element {
     setImportDialogOpen,
     setCreateEventDialogOpen,
     setSettingsDialogOpen,
+    sortBy,
+    setSortBy,
   } = useUIStore()
 
   const { selectedPhotoIds, removePhotos } = usePhotoStore()
@@ -59,6 +62,30 @@ export function Toolbar(): React.JSX.Element {
             onChange={(e) => setThumbnailSize(Number(e.target.value))}
             className="w-16 h-1 accent-[#007AFF] cursor-pointer"
           />
+        </div>
+
+        <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-1" />
+
+        {/* Sort control */}
+        <div className="flex items-center gap-1">
+          <ArrowUpDown size={14} className="text-gray-400" />
+          {(['created_at', 'file_name'] as SortBy[]).map((key) => (
+            <button
+              key={key}
+              onClick={() => {
+                setSortBy(key)
+                window.dispatchEvent(new CustomEvent('refresh-photos'))
+              }}
+              className={cn(
+                'px-2 py-1 text-xs font-medium rounded-md transition-colors',
+                sortBy === key
+                  ? 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200'
+                  : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+              )}
+            >
+              {key === 'created_at' ? '时间' : '文件名'}
+            </button>
+          ))}
         </div>
       </div>
 

@@ -55,6 +55,7 @@ function App(): React.JSX.Element {
     settingsDialogOpen,
     setSettingsDialogOpen,
     showingTrash,
+    sortBy,
   } = useUIStore()
 
   // Enable keyboard shortcuts
@@ -97,13 +98,14 @@ function App(): React.JSX.Element {
     try {
       const result = await window.electron.ipcRenderer.invoke(
         'photos:listByEvent',
-        selectedEventId
+        selectedEventId,
+        sortBy
       )
       setPhotos(result as any)
     } catch (err) {
       console.error('Failed to load photos:', err)
     }
-  }, [selectedEventId, setPhotos, setEvents, showingTrash])
+  }, [selectedEventId, setPhotos, setEvents, showingTrash, sortBy])
 
   // Load photos when event or trash state changes
   useEffect(() => {
@@ -119,6 +121,13 @@ function App(): React.JSX.Element {
       window.dispatchEvent(new Event('refresh-tags'))
     })
     return unsub
+  }, [refreshData])
+
+  // Listen for sort change events from Toolbar
+  useEffect(() => {
+    const handler = (): void => { refreshData() }
+    window.addEventListener('refresh-photos', handler)
+    return () => window.removeEventListener('refresh-photos', handler)
   }, [refreshData])
 
   // Load trash photos when switching to trash view

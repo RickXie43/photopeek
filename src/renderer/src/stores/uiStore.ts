@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { ViewMode, KeyboardMode, FilterOptions, AppSettings } from '../types/photo'
+import type { ViewMode, KeyboardMode, FilterOptions, AppSettings, SortBy } from '../types/photo'
 
 interface UIStore {
   viewMode: ViewMode
@@ -12,6 +12,7 @@ interface UIStore {
   createEventDialogOpen: boolean
   settingsDialogOpen: boolean
   showingTrash: boolean
+  sortBy: SortBy
 
   setViewMode: (mode: ViewMode) => void
   setKeyboardMode: (mode: KeyboardMode) => void
@@ -23,6 +24,7 @@ interface UIStore {
   setCreateEventDialogOpen: (open: boolean) => void
   setSettingsDialogOpen: (open: boolean) => void
   setShowingTrash: (open: boolean) => void
+  setSortBy: (sortBy: SortBy) => void
   getSettings: () => AppSettings
 }
 
@@ -51,6 +53,7 @@ export const useUIStore = create<UIStore>()(
       createEventDialogOpen: false,
       settingsDialogOpen: false,
       showingTrash: false,
+      sortBy: 'created_at',
 
       setViewMode: (mode) => set({ viewMode: mode }),
       setKeyboardMode: (mode) => set({ keyboardMode: mode }),
@@ -67,6 +70,7 @@ export const useUIStore = create<UIStore>()(
         set({ createEventDialogOpen: open }),
       setSettingsDialogOpen: (open) => set({ settingsDialogOpen: open }),
       setShowingTrash: (open) => set({ showingTrash: open }),
+      setSortBy: (sortBy) => set({ sortBy }),
       getSettings: () => ({
         keyboardMode: get().keyboardMode,
         customShortcuts: {},

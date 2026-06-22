@@ -68,6 +68,7 @@ export interface PhotoTag {
 
 export type ViewMode = 'grid' | 'loupe' | 'compare' | 'survey'
 export type KeyboardMode = 'vim' | 'macos' | 'custom'
+export type SortBy = 'created_at' | 'file_name'
 
 export interface FilterOptions {
   ratingMin: number

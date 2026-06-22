@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import { usePhotoStore } from '../../stores/photoStore'
 import { useEventStore } from '../../stores/eventStore'
+import { useUIStore } from '../../stores/uiStore'
 import { cn } from '../../lib/cn'
 
 export function InspectorPanel(): React.JSX.Element {
   const { photos, selectedPhotoIds, setPhotos, setLoading } = usePhotoStore()
   const { selectedEventId } = useEventStore()
+  const { sortBy } = useUIStore()
   const selectedPhoto = photos.find((p) => selectedPhotoIds.has(p.id))
   const [eventTags, setEventTags] = useState<{ id: string; name: string; color: string }[]>([])
   const [photoTags, setPhotoTags] = useState<{ id: string; name: string; color: string }[]>([])
@@ -40,13 +42,13 @@ export function InspectorPanel(): React.JSX.Element {
     setLoading(true)
     const tagIds = Array.from(filterTagIds)
     const invoke = tagIds.length > 0
-      ? window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds })
-      : window.electron.ipcRenderer.invoke('photos:listByEvent', selectedEventId)
+      ? window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds, sortBy })
+      : window.electron.ipcRenderer.invoke('photos:listByEvent', selectedEventId, sortBy)
     invoke.then((result: any) => {
       setPhotos(result)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [filterTagIds, selectedEventId])
+  }, [filterTagIds, selectedEventId, sortBy])
 
   const toggleFilter = (tagId: string): void => {
     setFilterTagIds(prev => {

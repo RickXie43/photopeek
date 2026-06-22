@@ -97,7 +97,7 @@ export function syncEventJsonPhotos(eventId: string): void {
     // Sync photos key info
     const photoRows = db.exec(`
       SELECT id, file_name, file_size, width, height, rating, flag, color_label,
-             is_edited, needs_edit, metadata, deleted_at
+             is_edited, needs_edit, metadata, deleted_at, created_at
       FROM photos WHERE event_id = ? ORDER BY created_at
     `, [eventId])
     const photos: Record<string, any> = {}
@@ -123,6 +123,7 @@ export function syncEventJsonPhotos(eventId: string): void {
           cameraModel: md.cameraModel || null,
           tags: photoTagMap[id] || [],
           deletedAt: (row[columns.indexOf('deleted_at')] as string) || null,
+          createdAt: (row[columns.indexOf('created_at')] as string) || null,
         }
       }
     }

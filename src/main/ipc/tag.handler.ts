@@ -163,12 +163,13 @@ export function registerTagHandlers(): void {
     return { hasTag: !hasTag }
   })
 
-  ipcMain.handle('photos:listByTags', async (_event, data: { eventId: string; tagIds: string[] }): Promise<Photo[]> => {
+  ipcMain.handle('photos:listByTags', async (_event, data: { eventId: string; tagIds: string[]; sortBy?: string }): Promise<Photo[]> => {
     const db = getDb()
     let rows: Record<string, unknown>[] = []
+    const orderCol = data.sortBy === 'file_name' ? 'file_name' : 'created_at'
 
     if (data.tagIds.length === 0) {
-      const result = db.exec('SELECT * FROM photos WHERE event_id = ? AND deleted_at IS NULL ORDER BY created_at ASC', [data.eventId])
+      const result = db.exec(`SELECT * FROM photos WHERE event_id = ? AND deleted_at IS NULL ORDER BY ${orderCol} ASC`, [data.eventId])
       if (result.length > 0) {
         const { columns, values } = result[0]
         rows = values.map((row) => Object.fromEntries(columns.map((col, i) => [col, row[i]])))
@@ -180,7 +181,7 @@ export function registerTagHandlers(): void {
         SELECT p.* FROM photos p
         WHERE p.event_id = ? AND p.deleted_at IS NULL
           AND (SELECT COUNT(*) FROM photo_tags pt WHERE pt.photo_id = p.id AND pt.tag_id IN (${placeholders})) = ?
-        ORDER BY p.created_at ASC
+        ORDER BY p.${orderCol} ASC
       `
       const result = db.exec(sql, [data.eventId, ...data.tagIds, data.tagIds.length])
       if (result.length > 0) {

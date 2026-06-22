@@ -172,6 +172,11 @@ input,button,select{font-family:inherit}
 .size-slider::-webkit-slider-thumb:hover{transform:scale(1.2)}
 .size-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);cursor:pointer}
 
+/* Sort control */
+.sort-btn{padding:3px 8px;border:1px solid var(--surface2);border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:11px;transition:all .2s}
+.sort-btn:hover{border-color:var(--accent);color:var(--accent)}
+.sort-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+
 /* Photo Grid */
 #photo-grid{padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--thumb-size,150px),1fr));gap:8px}
 .photo-card{position:relative;aspect-ratio:1;border-radius:var(--radius-sm);overflow:hidden;cursor:pointer;background:var(--surface);transition:transform .15s}
@@ -285,7 +290,12 @@ input,button,select{font-family:inherit}
         <div class="photo-count" id="photo-count-label"></div>
       </div>
     </div>
-    <div class="size-control">
+    <div class="size-control" style="display:flex;align-items:center;gap:8px">
+      <div class="sort-control" style="display:flex;align-items:center;gap:4px;font-size:12px">
+        <span style="color:var(--text2)">排序:</span>
+        <button class="sort-btn" data-sort="created_at" style="padding:3px 8px;border:1px solid var(--surface2);border-radius:6px;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;transition:all .2s">时间</button>
+        <button class="sort-btn" data-sort="file_name" style="padding:3px 8px;border:1px solid var(--surface2);border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:11px;transition:all .2s">文件名</button>
+      </div>
       <input type="range" id="thumb-size-slider" min="80" max="320" value="150" class="size-slider" />
     </div>
     <button class="leave-btn" id="leave-btn">退出</button>
@@ -359,6 +369,7 @@ input,button,select{font-family:inherit}
   let connectedUsers = []
   let shutdownFlag = false
   let activeFilterTagIds = new Set() // Set of tag IDs, empty = show all
+  let sortMode = 'created_at' // 'created_at' or 'file_name'
 
   // DOM refs
   const loginScreen = document.getElementById('login-screen')
@@ -479,7 +490,22 @@ input,button,select{font-family:inherit}
         return true
       })
     }
-    photoOrder = ids.sort()
+    // Sort by selected mode
+    if (sortMode === 'file_name') {
+      ids.sort((a, b) => {
+        const na = (eventData.photos[a].fileName || a).toLowerCase()
+        const nb = (eventData.photos[b].fileName || b).toLowerCase()
+        return na.localeCompare(nb)
+      })
+    } else {
+      // Default: sort by createdAt (time order)
+      ids.sort((a, b) => {
+        const da = eventData.photos[a].createdAt || ''
+        const db = eventData.photos[b].createdAt || ''
+        return da.localeCompare(db)
+      })
+    }
+    photoOrder = ids
   }
 
   function getPhoto(id) { return eventData && eventData.photos ? eventData.photos[id] : null }
@@ -849,6 +875,7 @@ input,button,select{font-family:inherit}
         renderGrid()
         renderUsersBar()
         renderTagFilterBar()
+        renderSortButtons()
         connectWs()
       })
       .catch(err => {
@@ -894,6 +921,33 @@ input,button,select{font-family:inherit}
     const val = thumbSizeSlider.value
     photoGrid.style.setProperty('--thumb-size', val + 'px')
     localStorage.setItem('photopeek-thumb-size', val)
+  })
+
+  // ─── Sort control ──────────────────────────────────────────────────────
+  function renderSortButtons() {
+    document.querySelectorAll('.sort-btn').forEach(btn => {
+      const val = btn.getAttribute('data-sort')
+      btn.classList.toggle('active', val === sortMode)
+      if (val === sortMode) {
+        btn.style.background = 'var(--accent)'
+        btn.style.borderColor = 'var(--accent)'
+        btn.style.color = '#fff'
+      } else {
+        btn.style.background = 'transparent'
+        btn.style.borderColor = 'var(--surface2)'
+        btn.style.color = 'var(--text2)'
+      }
+    })
+  }
+  document.querySelectorAll('.sort-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const val = btn.getAttribute('data-sort')
+      if (val === sortMode) return
+      sortMode = val
+      renderSortButtons()
+      buildPhotoOrder()
+      renderGrid()
+    })
   })
 
   // ─── Touch: swipe to navigate + double-tap for tag toggle ──────────────

@@ -131,13 +131,14 @@ async function repairMetadata(db: ReturnType<typeof getDb>, photos: Record<strin
 }
 
 export function registerPhotoHandlers(): void {
-  ipcMain.handle('photos:listByEvent', async (_event, eventId: string) => {
+  ipcMain.handle('photos:listByEvent', async (_event, eventId: string, sortBy?: string) => {
     const db = getDb()
-    const rows = queryAll(db, 'SELECT * FROM photos WHERE event_id = ? AND deleted_at IS NULL ORDER BY created_at ASC', [eventId])
+    const orderCol = sortBy === 'file_name' ? 'file_name' : 'created_at'
+    const rows = queryAll(db, `SELECT * FROM photos WHERE event_id = ? AND deleted_at IS NULL ORDER BY ${orderCol} ASC`, [eventId])
     // Auto-repair 0×0 dimensions and missing metadata for existing photos
     await repairZeroDimensions(db, rows)
     await repairMetadata(db, rows)
-    console.log('[IPC] photos:listByEvent →', rows.length, 'photos for', eventId)
+    console.log('[IPC] photos:listByEvent →', rows.length, 'photos for', eventId, 'sortBy:', sortBy || 'created_at')
     return rows.map(deserializePhoto)
   })
 
