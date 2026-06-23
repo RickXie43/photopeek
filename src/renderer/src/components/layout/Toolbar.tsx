@@ -8,14 +8,11 @@ import type { SortBy } from '../../types/photo'
 
 export function Toolbar(): React.JSX.Element {
   const {
-    keyboardMode,
-    setKeyboardMode,
     thumbnailSize,
     setThumbnailSize,
     toggleInspector,
     inspectorVisible,
     setImportDialogOpen,
-    setCreateEventDialogOpen,
     setSettingsDialogOpen,
     sortBy,
     setSortBy,
@@ -91,20 +88,6 @@ export function Toolbar(): React.JSX.Element {
 
       {/* Right: Actions */}
       <div className="flex items-center gap-1.5">
-        {/* Keyboard mode switcher */}
-        <button
-          onClick={() => setKeyboardMode(keyboardMode === 'vim' ? 'macos' : 'vim')}
-          className={cn(
-            'px-2 py-1 text-xs font-mono rounded-md transition-colors',
-            keyboardMode === 'vim'
-              ? 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200'
-              : 'text-gray-400 hover:text-gray-600'
-          )}
-          title="切换快捷键模式"
-        >
-          {keyboardMode === 'vim' ? 'VIM' : '⌘'}
-        </button>
-
         <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-1" />
 
         <button
@@ -121,13 +104,6 @@ export function Toolbar(): React.JSX.Element {
           className="px-3 py-1 text-xs font-medium bg-[#007AFF] text-white rounded-lg hover:bg-[#0066CC] transition-colors"
         >
           导入
-        </button>
-
-        <button
-          onClick={() => setCreateEventDialogOpen(true)}
-          className="px-3 py-1 text-xs font-medium bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-        >
-          + 事件
         </button>
 
         {/* Batch delete (visible when photos selected) */}

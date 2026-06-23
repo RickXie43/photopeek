@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { useEventStore } from '../../stores/eventStore'
@@ -16,6 +16,17 @@ export function CreateEventDialog({
   const [description, setDescription] = useState('')
   const [loading, setLoading] = useState(false)
   const { addEvent } = useEventStore()
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Ensure input gets focus when dialog opens
+  useEffect(() => {
+    if (open) {
+      setTimeout(() => {
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      }, 100)
+    }
+  }, [open])
 
   const handleCreate = async (): Promise<void> => {
     if (!name.trim()) return
@@ -44,6 +55,7 @@ export function CreateEventDialog({
             事件名称
           </label>
           <input
+            ref={inputRef}
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}

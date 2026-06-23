@@ -4,7 +4,7 @@ import { usePhotoStore } from '../stores/photoStore'
 import { useEventStore } from '../stores/eventStore'
 
 export function useKeyboard(): void {
-  const { keyboardMode, setViewMode, viewMode } =
+  const { setViewMode, viewMode } =
     useUIStore()
   const {
     photos,
@@ -19,15 +19,11 @@ export function useKeyboard(): void {
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement
-      // Don't handle shortcuts when typing in inputs
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.tagName === 'SELECT' ||
-        target.isContentEditable
-      ) {
-        return
-      }
+      // Also check document.activeElement for extra safety
+      const activeEl = document.activeElement as HTMLElement | null
+      const isInput = (el: HTMLElement | null): boolean =>
+        el !== null && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+      if (isInput(target) || isInput(activeEl)) return
 
       // --- View mode shortcuts ---
       if (e.key === 'g' && !e.metaKey && !e.ctrlKey) {
@@ -43,41 +39,18 @@ export function useKeyboard(): void {
         return
       }
 
-      // macOS style view switch
-      if (keyboardMode === 'macos' && e.metaKey) {
-        switch (e.key) {
-          case '1':
-            e.preventDefault()
-            setViewMode('grid')
-            return
-          case '2':
-            e.preventDefault()
-            setViewMode('loupe')
-            return
-          case '3':
-            e.preventDefault()
-            setViewMode('compare')
-            return
-          case '4':
-            e.preventDefault()
-            setViewMode('survey')
-            return
-          case 'i':
-            e.preventDefault()
-            useUIStore.getState().toggleInspector()
-            return
-        }
-      }
-
-      // --- Navigation (common to both modes) ---
+      // --- Navigation ---
       const currentIndex = selectedPhotoIds.size === 1
         ? photos.findIndex((p) => selectedPhotoIds.has(p.id))
         : -1
 
       if (keyboardMode === 'vim') {
+        // Skip j/k navigation when LoupeView is open (it handles j/k for version switching)
+        const loupeActive = !!document.querySelector('[data-loupe="true"]')
         switch (e.key) {
           case 'j':
           case 'n':
+            if (loupeActive) return
             e.preventDefault()
             if (currentIndex < photos.length - 1) {
               selectPhoto(photos[currentIndex + 1].id)
@@ -85,6 +58,7 @@ export function useKeyboard(): void {
             return
           case 'k':
           case 'p':
+            if (loupeActive) return
             e.preventDefault()
             if (currentIndex > 0) {
               selectPhoto(photos[currentIndex - 1].id)
@@ -203,7 +177,6 @@ export function useKeyboard(): void {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [
-    keyboardMode,
     viewMode,
     photos,
     selectedPhotoIds,

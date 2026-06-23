@@ -8,7 +8,7 @@ import { Trash2, Pencil, TrashIcon, Wifi, StopCircle } from 'lucide-react'
 export function Sidebar(): React.JSX.Element {
   const { events, selectedEventId, setSelectedEvent, removeEvent, updateEvent } = useEventStore()
   const { setPhotos } = usePhotoStore()
-  const { showingTrash, setShowingTrash } = useUIStore()
+  const { showingTrash, setShowingTrash, setCreateEventDialogOpen } = useUIStore()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [connectedUsers, setConnectedUsers] = useState<{ id: string; nickname: string; joinedAt: string }[]>([])
@@ -116,7 +116,16 @@ export function Sidebar(): React.JSX.Element {
           <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
             事件
           </span>
-          <span className="text-[11px] text-gray-400">{events.length}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-gray-400">{events.length}</span>
+            <button
+              onClick={() => setCreateEventDialogOpen(true)}
+              className="text-[11px] font-medium text-gray-400 hover:text-[#007AFF] transition-colors leading-none"
+              title="添加事件"
+            >
+              +
+            </button>
+          </div>
         </div>
       </div>
 

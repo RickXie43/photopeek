@@ -1,9 +1,12 @@
 import { ipcMain } from 'electron'
 import { getDb, persistDatabase } from '../db/connection'
-import type { Photo } from '../../renderer/src/types/photo'
-import { syncEventJsonPhotos } from './event.handler'
+import type { Photo, PhotoVersion } from '../../renderer/src/types/photo'
+import { syncEventJsonPhotos, getEventFolderName } from './event.handler'
+import { getEventDir } from '../services/library.service'
 import { parseMetadata } from '../services/metadata.service'
+import { v4 as uuid } from 'uuid'
 import * as fs from 'fs'
+import * as path from 'path'
 import sharp from 'sharp'
 
 function queryAll(db: ReturnType<typeof getDb>, sql: string, params: unknown[] = []): Record<string, unknown>[] {
@@ -40,6 +43,34 @@ function deserializePhoto(row: Record<string, unknown>): Photo {
     deletedAt: (row.deleted_at as string) || null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    versionSummary: (row.version_summary as string) || null,
+  }
+}
+
+/** Attach version summary string to each photo (for GridView badges) */
+export function attachVersionSummary(db: ReturnType<typeof getDb>, photos: Photo[]): void {
+  if (photos.length === 0) return
+  const ids = photos.map(p => p.id)
+  // sql.js doesn't have GROUP_CONCAT, so we query all versions and build the map in JS
+  const placeholders = ids.map(() => '?').join(',')
+  const vRows = db.exec(
+    `SELECT photo_id, version_name FROM photo_versions WHERE photo_id IN (${placeholders}) ORDER BY photo_id, is_original DESC, created_at ASC`,
+    ids,
+  )
+  if (vRows.length === 0) return
+  const summaryMap = new Map<string, string[]>()
+  const { columns, values } = vRows[0]
+  for (const row of values) {
+    const pid = row[columns.indexOf('photo_id')] as string
+    const vn = row[columns.indexOf('version_name')] as string
+    if (!summaryMap.has(pid)) summaryMap.set(pid, [])
+    summaryMap.get(pid)!.push(vn)
+  }
+  for (const photo of photos) {
+    const versions = summaryMap.get(photo.id)
+    if (versions && versions.length > 0) {
+      photo.versionSummary = JSON.stringify(versions)
+    }
   }
 }
 
@@ -138,8 +169,13 @@ export function registerPhotoHandlers(): void {
     // Auto-repair 0×0 dimensions and missing metadata for existing photos
     await repairZeroDimensions(db, rows)
     await repairMetadata(db, rows)
+
+    // Attach version summary to each photo
+    const photos = rows.map(deserializePhoto)
+    attachVersionSummary(db, photos)
+
     console.log('[IPC] photos:listByEvent →', rows.length, 'photos for', eventId, 'sortBy:', sortBy || 'created_at')
-    return rows.map(deserializePhoto)
+    return photos
   })
 
   ipcMain.handle('photos:get', async (_event, photoId: string) => {
@@ -298,33 +334,47 @@ export function registerPhotoHandlers(): void {
     }
   })
 
-  ipcMain.handle('photos:refreshMetadata', async (_event, photoId: string): Promise<{ success: boolean; metadata: Photo['metadata'] | null; debug?: string }> => {
+  ipcMain.handle('photos:refreshMetadata', async (_event, photoId: string, versionId?: string): Promise<{ success: boolean; metadata: Photo['metadata'] | null; debug?: string }> => {
     const db = getDb()
-    const row = queryOne(db, 'SELECT id, file_path FROM photos WHERE id = ?', [photoId])
-    if (!row || !row.file_path) {
-      console.log('[Photo] refreshMetadata: no row or file_path')
-      return { success: false, metadata: null, debug: 'no row or file_path' }
+
+    // Resolve file path: if versionId provided, refresh version metadata; otherwise refresh photo metadata
+    let filePath: string | null = null
+    let targetTable = 'photos'
+    let targetId = photoId
+
+    if (versionId) {
+      const vRow = queryOne(db, 'SELECT file_path, photo_id FROM photo_versions WHERE id = ?', [versionId])
+      if (vRow?.file_path) {
+        filePath = vRow.file_path as string
+        targetTable = 'photo_versions'
+        targetId = versionId
+      }
     }
-    const filePath = row.file_path as string
-    console.log('[Photo] refreshMetadata: filePath =', filePath)
-    console.log('[Photo] refreshMetadata: exists =', fs.existsSync(filePath))
-    if (!fs.existsSync(filePath)) {
-      return { success: false, metadata: null, debug: 'file not found: ' + filePath }
+
+    if (!filePath) {
+      const row = queryOne(db, 'SELECT file_path FROM photos WHERE id = ?', [photoId])
+      filePath = (row?.file_path as string) || null
     }
+
+    if (!filePath) return { success: false, metadata: null, debug: 'no file_path' }
+    if (!fs.existsSync(filePath)) return { success: false, metadata: null, debug: 'file not found: ' + filePath }
+
     try {
       const newMeta = await parseMetadata(filePath)
-      console.log('[Photo] refreshMetadata: parseMetadata returned', JSON.stringify(newMeta))
       if (newMeta && Object.keys(newMeta).length > 0) {
         const now = new Date().toISOString()
         const metaJson = JSON.stringify(newMeta)
-        db.run('UPDATE photos SET metadata = ?, updated_at = ? WHERE id = ?', [metaJson, now, photoId])
-        if (newMeta.imageWidth) db.run('UPDATE photos SET width = ? WHERE id = ?', [newMeta.imageWidth, photoId])
-        if (newMeta.imageHeight) db.run('UPDATE photos SET height = ? WHERE id = ?', [newMeta.imageHeight, photoId])
+        if (targetTable === 'photo_versions') {
+          db.run('UPDATE photo_versions SET metadata = ? WHERE id = ?', [metaJson, targetId])
+          db.run('UPDATE photo_versions SET width = ?, height = ? WHERE id = ?', [newMeta.imageWidth || 0, newMeta.imageHeight || 0, targetId])
+        } else {
+          db.run('UPDATE photos SET metadata = ?, updated_at = ? WHERE id = ?', [metaJson, now, targetId])
+          if (newMeta.imageWidth) db.run('UPDATE photos SET width = ? WHERE id = ?', [newMeta.imageWidth, targetId])
+          if (newMeta.imageHeight) db.run('UPDATE photos SET height = ? WHERE id = ?', [newMeta.imageHeight, targetId])
+        }
         persistDatabase()
-        console.log('[Photo] refreshMetadata: success with', Object.keys(newMeta).length, 'fields')
         return { success: true, metadata: newMeta }
       }
-      console.log('[Photo] refreshMetadata: parseMetadata returned null/empty')
       return { success: false, metadata: null, debug: 'parseMetadata returned null/empty' }
     } catch (err) {
       console.error('[Photo] Refresh metadata failed:', err)
@@ -353,4 +403,355 @@ export function registerPhotoHandlers(): void {
       return { error: String(err), filePath, exists: require('fs').existsSync(filePath) }
     }
   })
+
+  // ── Photo Version CRUD ────────────────────────────────────────────────
+
+  ipcMain.handle('photos:listVersions', async (_event, photoId: string): Promise<PhotoVersion[]> => {
+    const db = getDb()
+    const rows = queryAll(db,
+      'SELECT * FROM photo_versions WHERE photo_id = ? ORDER BY is_original DESC, created_at ASC',
+      [photoId],
+    )
+    return rows.map(deserializePhotoVersion)
+  })
+
+  ipcMain.handle('photos:getVersion', async (_event, versionId: string): Promise<PhotoVersion | null> => {
+    const db = getDb()
+    const row = queryOne(db, 'SELECT * FROM photo_versions WHERE id = ?', [versionId])
+    if (!row) return null
+    return deserializePhotoVersion(row)
+  })
+
+  ipcMain.handle('photos:deleteVersion', async (_event, versionId: string): Promise<{ success: boolean; error?: string }> => {
+    const db = getDb()
+    try {
+      const row = queryOne(db, 'SELECT * FROM photo_versions WHERE id = ?', [versionId])
+      if (!row) return { success: false, error: 'Version not found' }
+      if ((row.is_original as number) === 1) return { success: false, error: 'Cannot delete original version' }
+
+      // Delete the file on disk
+      const filePath = row.file_path as string
+      if (filePath && fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath) } catch {}
+      }
+      // Delete thumbnail
+      const thumbPath = row.thumbnail_path as string
+      if (thumbPath && fs.existsSync(thumbPath)) {
+        try { fs.unlinkSync(thumbPath) } catch {}
+      }
+
+      db.run('DELETE FROM photo_versions WHERE id = ?', [versionId])
+      persistDatabase()
+
+      // Sync event.json
+      const photoRow = queryOne(db, 'SELECT event_id FROM photos WHERE id = ?', [row.photo_id])
+      if (photoRow) syncEventJsonPhotos(photoRow.event_id as string)
+
+      return { success: true }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[Photo] Failed to delete version:', msg)
+      return { success: false, error: msg }
+    }
+  })
+
+  ipcMain.handle('photos:setDefaultVersion', async (_event, data: { photoId: string; versionId: string }): Promise<{ success: boolean; error?: string }> => {
+    const db = getDb()
+    try {
+      const ver = queryOne(db, 'SELECT id FROM photo_versions WHERE id = ? AND photo_id = ?', [data.versionId, data.photoId])
+      if (!ver) return { success: false, error: 'Version not found for this photo' }
+
+      db.run('UPDATE photos SET default_version_id = ?, updated_at = ? WHERE id = ?',
+        [data.versionId, new Date().toISOString(), data.photoId])
+      persistDatabase()
+
+      const photoRow = queryOne(db, 'SELECT event_id FROM photos WHERE id = ?', [data.photoId])
+      if (photoRow) syncEventJsonPhotos(photoRow.event_id as string)
+
+      return { success: true }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: msg }
+    }
+  })
+
+  ipcMain.handle('photos:addVersion', async (_event, data: {
+    photoId: string
+    versionName: string
+    filePath: string
+    fileName: string
+    fileSize: number
+    width: number
+    height: number
+    metadata: string | null
+    uploadedBy?: string | null
+  }): Promise<{ success: boolean; version?: PhotoVersion; error?: string }> => {
+    const db = getDb()
+    const now = new Date().toISOString()
+    try {
+      // Copy file to event directory
+      const photoRow = queryOne(db, 'SELECT event_id, file_name FROM photos WHERE id = ?', [data.photoId])
+      if (!photoRow) return { success: false, error: 'Photo not found' }
+
+      const folderName = getEventFolderName(photoRow.event_id as string)
+      const eventDir = getEventDir(folderName)
+
+      // Resolve filename conflicts: if same file_name exists for this photo, auto-rename
+      let finalFileName = data.fileName
+      let finalVersionName = data.versionName
+      const baseName = path.parse(data.fileName).name
+      const ext = path.extname(data.fileName)
+      const user = data.uploadedBy || 'user'
+
+      // Find all existing version filenames for this photo
+      const existingFNs = queryAll(db,
+        'SELECT file_name FROM photo_versions WHERE photo_id = ?',
+        [data.photoId],
+      ).map(r => r.file_name as string)
+
+      if (existingFNs.includes(finalFileName)) {
+        let i = 1
+        while (existingFNs.includes(finalFileName)) {
+          finalFileName = `${baseName}_${user}_ver${i}${ext}`
+          i++
+        }
+      }
+
+      // Also ensure destination path doesn't exist on disk
+      let destPath = path.join(eventDir, finalFileName)
+      let diskCounter = 1
+      while (fs.existsSync(destPath)) {
+        finalFileName = `${baseName}_${user}_ver${diskCounter}${ext}`
+        destPath = path.join(eventDir, finalFileName)
+        diskCounter++
+      }
+
+      // Resolve version name conflicts
+      const existingVNs = queryAll(db,
+        'SELECT version_name FROM photo_versions WHERE photo_id = ?',
+        [data.photoId],
+      ).map(r => r.version_name as string)
+
+      if (existingVNs.includes(finalVersionName)) {
+        let vn = 1
+        while (existingVNs.includes(finalVersionName)) {
+          finalVersionName = `${data.versionName}_${vn}`
+          vn++
+        }
+      }
+
+      // Copy or move the file
+      if (data.filePath !== destPath) {
+        if (fs.existsSync(data.filePath)) {
+          fs.copyFileSync(data.filePath, destPath)
+        } else {
+          return { success: false, error: 'Source file not found' }
+        }
+      }
+
+      // Detect actual dimensions if not provided
+      let finalWidth = data.width
+      let finalHeight = data.height
+      if ((!finalWidth || !finalHeight) && fs.existsSync(destPath)) {
+        try {
+          const sharp = require('sharp') as any
+          const meta = await sharp(destPath).metadata() as { width?: number; height?: number }
+          if (meta.width) finalWidth = meta.width
+          if (meta.height) finalHeight = meta.height
+        } catch {}
+      }
+
+      const versionId = uuid()
+      db.run(
+        `INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, metadata, is_original, uploaded_by, uploaded_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        [versionId, data.photoId, finalVersionName, destPath, finalFileName, data.fileSize,
+         finalWidth, finalHeight, data.metadata, data.uploadedBy || null, now, now],
+      )
+
+      // Generate thumbnail
+      try {
+        const { generateThumbnail } = require('../services/thumbnail.service') as { generateThumbnail: Function }
+        const thumbPath = await generateThumbnail(destPath, versionId, photoRow.event_id as string, folderName)
+        if (thumbPath) {
+          db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, versionId])
+        }
+      } catch {}
+
+      // Restore camera metadata from original version if new file lacks it
+      const restoredMeta = await restoreCameraMetadata(db, data.photoId, destPath, data.metadata)
+      if (restoredMeta) {
+        db.run('UPDATE photo_versions SET metadata = ? WHERE id = ?', [restoredMeta, versionId])
+      }
+
+      persistDatabase()
+      syncEventJsonPhotos(photoRow.event_id as string)
+
+      const newVersion = queryOne(db, 'SELECT * FROM photo_versions WHERE id = ?', [versionId])
+      return { success: true, version: newVersion ? deserializePhotoVersion(newVersion) : undefined }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: msg }
+    }
+  })
+
+  // ── On-demand version migration: create versions for photos lacking them ──
+  ipcMain.handle('photos:migrateVersions', async (_event, eventId?: string): Promise<{ migrated: number }> => {
+    const db = getDb()
+    try {
+      const { v4: uuidV4 } = await import('uuid')
+      const whereClause = eventId
+        ? 'AND p.event_id = ?'
+        : ''
+      const params: unknown[] = []
+      if (eventId) params.push(eventId)
+
+      const orphanRows = db.exec(`
+        SELECT p.id, p.file_path, p.file_name, p.file_size, p.width, p.height, p.metadata, p.created_at
+        FROM photos p
+        WHERE p.deleted_at IS NULL ${whereClause}
+          AND NOT EXISTS (SELECT 1 FROM photo_versions v WHERE v.photo_id = p.id)
+      `, params)
+      if (orphanRows.length === 0 || orphanRows[0].values.length === 0) {
+        return { migrated: 0 }
+      }
+      const { columns, values } = orphanRows[0]
+      let created = 0
+      for (const row of values) {
+        const photoId = row[columns.indexOf('id')] as string
+        const filePath = row[columns.indexOf('file_path')] as string
+        const fileName = row[columns.indexOf('file_name')] as string
+        const fileSize = row[columns.indexOf('file_size')] as number
+        const width = row[columns.indexOf('width')] as number
+        const height = row[columns.indexOf('height')] as number
+        const metadata = (row[columns.indexOf('metadata')] || null) as string | null
+        const createdAt = (row[columns.indexOf('created_at')] || new Date().toISOString()) as string
+
+        const ext = (fileName || '').split('.').pop()?.toLowerCase() || ''
+        const rawExts = ['cr2','cr3','nef','arw','rw2','orf','raf','srf','sr2','raw']
+        const versionName = rawExts.includes(ext) ? 'RAW'
+          : ext === 'dng' ? 'DNG'
+          : ext === 'tiff' || ext === 'tif' ? 'TIFF'
+          : ext === 'png' ? 'PNG'
+          : ext === 'heic' || ext === 'heif' ? 'HEIC'
+          : ext === 'avif' ? 'AVIF'
+          : '原始文件'
+
+        db.run(`INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, metadata, is_original, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          [uuidV4(), photoId, versionName, filePath, fileName, fileSize, width, height, metadata, createdAt])
+        created++
+      }
+      if (created > 0) {
+        const { persistDatabase } = await import('../db/connection')
+        persistDatabase()
+        console.log('[IPC] Migrated', created, 'photos to photo_versions')
+      }
+      return { migrated: created }
+    } catch (err) {
+      console.error('[IPC] Version migration failed:', err)
+      return { migrated: 0 }
+    }
+  })
+}
+
+function deserializePhotoVersion(row: Record<string, unknown>): PhotoVersion {
+  return {
+    id: row.id as string,
+    photoId: row.photo_id as string,
+    versionName: row.version_name as string,
+    filePath: row.file_path as string,
+    fileName: row.file_name as string,
+    fileSize: row.file_size as number,
+    width: row.width as number,
+    height: row.height as number,
+    thumbnailPath: (row.thumbnail_path as string) || null,
+    metadata: row.metadata ? JSON.parse(row.metadata as string) : null,
+    isOriginal: (row.is_original as number) === 1,
+    uploadedBy: (row.uploaded_by as string) || null,
+    uploadedAt: (row.uploaded_at as string) || null,
+    createdAt: row.created_at as string,
+  }
+}
+
+/** Copy camera metadata (dateTimeOriginal, cameraMake, Model, Lens, aperture, shutter, ISO, focal)
+ *  from the best available source version when the new version has none or is a JPEG upload.
+ *  Returns the merged metadata JSON string (or null if none). */
+export async function restoreCameraMetadata(
+  db: ReturnType<typeof getDb>,
+  photoId: string,
+  destPath: string,
+  currentMetadata: string | null,
+): Promise<string | null> {
+  // If the new file already has camera metadata, keep it
+  if (currentMetadata) {
+    try {
+      const parsed = JSON.parse(currentMetadata)
+      if (parsed.cameraModel || parsed.iso) return currentMetadata
+    } catch {}
+  }
+  // Try to parse metadata from the new file itself
+  try {
+    const { parseMetadata } = require('../services/metadata.service')
+    const freshMeta = await parseMetadata(destPath)
+    if (freshMeta && (freshMeta.cameraModel || freshMeta.iso)) {
+      return JSON.stringify(freshMeta)
+    }
+  } catch {}
+
+  // Find the best source version (prefer original with camera metadata)
+  const sourceRows = db.exec(`
+    SELECT v.metadata, v.file_path FROM photo_versions v
+    WHERE v.photo_id = ? AND v.id != ''
+    ORDER BY v.is_original DESC, v.created_at ASC
+  `, [photoId])
+  if (sourceRows.length === 0 || sourceRows[0].values.length === 0) return null
+
+  // Try each source version in priority order
+  for (const row of sourceRows[0].values) {
+    const sourceMetaStr = row[0] as string | null
+    const sourceFilePath = row[1] as string
+    if (sourceMetaStr) {
+      try {
+        const src = JSON.parse(sourceMetaStr)
+        if (src.cameraModel || src.iso) {
+          // Merge: keep new file's own width/height/fileType, copy camera metadata
+          const merged: Record<string, unknown> = {}
+          if (src.dateTimeOriginal) merged.dateTimeOriginal = src.dateTimeOriginal
+          if (src.cameraMake) merged.cameraMake = src.cameraMake
+          if (src.cameraModel) merged.cameraModel = src.cameraModel
+          if (src.lensModel) merged.lensModel = src.lensModel
+          if (src.focalLength) merged.focalLength = src.focalLength
+          if (src.aperture) merged.aperture = src.aperture
+          if (src.shutterSpeed) merged.shutterSpeed = src.shutterSpeed
+          if (src.iso) merged.iso = src.iso
+          if (src.gpsLatitude) merged.gpsLatitude = src.gpsLatitude
+          if (src.gpsLongitude) merged.gpsLongitude = src.gpsLongitude
+          if (Object.keys(merged).length > 0) return JSON.stringify(merged)
+        }
+      } catch {}
+    }
+    // Fallback: try parsing metadata from the source file directly
+    if (sourceFilePath) {
+      try {
+        const { parseMetadata } = require('../services/metadata.service')
+        const srcMeta = await parseMetadata(sourceFilePath)
+        if (srcMeta && (srcMeta.cameraModel || srcMeta.iso)) {
+          const merged: Record<string, unknown> = {}
+          if (srcMeta.dateTimeOriginal) merged.dateTimeOriginal = srcMeta.dateTimeOriginal
+          if (srcMeta.cameraMake) merged.cameraMake = srcMeta.cameraMake
+          if (srcMeta.cameraModel) merged.cameraModel = srcMeta.cameraModel
+          if (srcMeta.lensModel) merged.lensModel = srcMeta.lensModel
+          if (srcMeta.focalLength) merged.focalLength = srcMeta.focalLength
+          if (srcMeta.aperture) merged.aperture = srcMeta.aperture
+          if (srcMeta.shutterSpeed) merged.shutterSpeed = srcMeta.shutterSpeed
+          if (srcMeta.iso) merged.iso = srcMeta.iso
+          if (srcMeta.gpsLatitude) merged.gpsLatitude = srcMeta.gpsLatitude
+          if (srcMeta.gpsLongitude) merged.gpsLongitude = srcMeta.gpsLongitude
+          if (Object.keys(merged).length > 0) return JSON.stringify(merged)
+        }
+      } catch {}
+    }
+  }
+  return null
 }

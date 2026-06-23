@@ -109,6 +109,29 @@ async function createTables(db: SqlJsDatabase): Promise<void> {
     )
   `)
 
+  // Add default_version_id column if missing
+  try { db.run('ALTER TABLE photos ADD COLUMN default_version_id TEXT DEFAULT NULL') } catch {}
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS photo_versions (
+      id              TEXT PRIMARY KEY,
+      photo_id        TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+      version_name    TEXT NOT NULL,
+      file_path       TEXT NOT NULL,
+      file_name       TEXT NOT NULL,
+      file_size       INTEGER NOT NULL DEFAULT 0,
+      width           INTEGER DEFAULT 0,
+      height          INTEGER DEFAULT 0,
+      thumbnail_path  TEXT,
+      metadata        TEXT,
+      is_original     INTEGER DEFAULT 0,
+      uploaded_by     TEXT DEFAULT NULL,
+      uploaded_at     TEXT DEFAULT NULL,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_photo_versions_photo ON photo_versions(photo_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_event ON photos(event_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_flag ON photos(flag)`)

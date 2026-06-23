@@ -73,7 +73,7 @@ app.whenReady().then(async () => {
   })
 
   // Register photo protocol handler
-  protocol.handle('photo', (request) => {
+  protocol.handle('photo', async (request) => {
     // URL format: photo:///C:/path/to/file.jpg
     // Must decodeURIComponent to handle non-ASCII characters (e.g. Chinese folder names)
     try {
@@ -88,12 +88,23 @@ app.whenReady().then(async () => {
         console.error('[photo protocol] File not found:', filePath)
         return new Response(null, { status: 404 })
       }
-      const buf = fs.readFileSync(filePath)
       const ext = path.extname(filePath).toLowerCase()
       const mimes: Record<string, string> = {
         '.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png',
         '.gif':'image/gif','.webp':'image/webp','.bmp':'image/bmp',
       }
+      // RAW files: serve embedded JPEG preview directly (no upscaling, keeps camera-native resolution)
+      const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
+      if (RAW_EXTS.has(ext)) {
+        const { getRawPreviewBuffer } = await import('./services/thumbnail.service')
+        const previewBuf = await getRawPreviewBuffer(filePath)
+        if (previewBuf) {
+          console.log(`[photo protocol] RAW preview size: ${(previewBuf.length / 1024).toFixed(0)}KB for ${path.basename(filePath)}`)
+          return new Response(previewBuf, { headers: { 'content-type': 'image/jpeg' } })
+        }
+        return new Response(null, { status: 415 })
+      }
+      const buf = fs.readFileSync(filePath)
       return new Response(buf, {
         headers: { 'content-type': mimes[ext] || 'image/jpeg' }
       })
@@ -123,6 +134,138 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('Startup event.json sync failed:', err)
   }
+
+  // Regenerate missing thumbnails on startup
+  try {
+    const { getDb } = await import('./db/connection')
+    const { generateThumbnail } = await import('./services/thumbnail.service')
+    const { getEventFolderName } = await import('./ipc/event.handler')
+    const db = getDb()
+
+    // Find all photo_versions that lack thumbnails (thumbnail_path IS NULL or file missing)
+    const rows = db.exec(`
+      SELECT v.id, v.photo_id, v.file_path, v.file_name, p.event_id
+      FROM photo_versions v
+      JOIN photos p ON p.id = v.photo_id
+      WHERE p.deleted_at IS NULL
+        AND (v.thumbnail_path IS NULL OR v.thumbnail_path = '')
+    `)
+    if (rows.length > 0 && rows[0].values.length > 0) {
+      const { columns, values } = rows[0]
+      let regenerated = 0
+      for (const row of values) {
+        const vid = row[columns.indexOf('id')] as string
+        const filePath = row[columns.indexOf('file_path')] as string
+        const eventId = row[columns.indexOf('event_id')] as string
+        if (filePath && fs.existsSync(filePath)) {
+          try {
+            const folderName = getEventFolderName(eventId)
+            const thumbPath = await generateThumbnail(filePath, vid, eventId, folderName)
+            if (thumbPath) {
+              db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, vid])
+              regenerated++
+            }
+          } catch (err) {
+            console.error('[Startup] Failed to regenerate thumbnail for', vid, err)
+          }
+        }
+      }
+      if (regenerated > 0) {
+        const { persistDatabase } = await import('./db/connection')
+        // Sync photos.thumbnail_path to best version's thumbnail
+        db.run(`
+          UPDATE photos SET thumbnail_path = (
+            SELECT v.thumbnail_path FROM photo_versions v
+            WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+            ORDER BY v.is_original DESC LIMIT 1
+          )
+        `)
+        persistDatabase()
+        console.log('[Startup] Regenerated', regenerated, 'missing thumbnails')
+      }
+    }
+  } catch (err) {
+    console.error('[Startup] Thumbnail regeneration failed:', err)
+  }
+  // Always sync photos.thumbnail_path from versions on startup (fix existing DB)
+  try {
+    const { getDb } = await import('./db/connection')
+    const db = getDb()
+    db.run(`
+      UPDATE photos SET thumbnail_path = (
+        SELECT v.thumbnail_path FROM photo_versions v
+        WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+        ORDER BY v.is_original DESC, v.created_at ASC LIMIT 1
+      )
+      WHERE photos.thumbnail_path IS NULL
+        AND EXISTS (
+          SELECT 1 FROM photo_versions v
+          WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+        )
+    `)
+    console.log('[Startup] Synced thumbnail_path for photos')
+  } catch (err) {
+    console.error('[Startup] Thumbnail path sync failed:', err)
+  }
+
+  // Migrate: create photo_versions for existing photos that lack them
+  try {
+    const { getDb } = await import('./db/connection')
+    const { v4: uuidV4 } = await import('uuid')
+    const db = getDb()
+    const orphanRows = db.exec(`
+      SELECT p.id, p.file_path, p.file_name, p.file_size, p.width, p.height, p.metadata, p.created_at
+      FROM photos p
+      WHERE p.deleted_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM photo_versions v WHERE v.photo_id = p.id)
+    `)
+    if (orphanRows.length > 0 && orphanRows[0].values.length > 0) {
+      const { columns, values } = orphanRows[0]
+      let created = 0
+      for (const row of values) {
+        const photoId = row[columns.indexOf('id')] as string
+        const filePath = row[columns.indexOf('file_path')] as string
+        const fileName = row[columns.indexOf('file_name')] as string
+        const fileSize = row[columns.indexOf('file_size')] as number
+        const width = row[columns.indexOf('width')] as number
+        const height = row[columns.indexOf('height')] as number
+        const metadata = (row[columns.indexOf('metadata')] || null) as string | null
+        const createdAt = (row[columns.indexOf('created_at')] || new Date().toISOString()) as string
+
+        const ext = (fileName || '').split('.').pop()?.toLowerCase() || ''
+        const rawExts = ['cr2','cr3','nef','arw','rw2','orf','raf','srf','sr2','raw']
+        const versionName = rawExts.includes(ext) ? 'RAW'
+          : ext === 'dng' ? 'DNG'
+          : ext === 'tiff' || ext === 'tif' ? 'TIFF'
+          : ext === 'png' ? 'PNG'
+          : ext === 'heic' || ext === 'heif' ? 'HEIC'
+          : ext === 'avif' ? 'AVIF'
+          : '原始文件'
+
+        db.run(`INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, metadata, is_original, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          [uuidV4(), photoId, versionName, filePath, fileName, fileSize, width, height, metadata, createdAt])
+        created++
+      }
+      if (created > 0) {
+        const { persistDatabase } = await import('./db/connection')
+        persistDatabase()
+        console.log('[Startup] Created', created, 'default versions for existing photos')
+      }
+    }
+  } catch (err) {
+    console.error('[Startup] Version migration failed:', err)
+  }
+
+  // IPC: get file stats (used by version import)
+  ipcMain.handle('fs:stat', async (_event, filePath: string) => {
+    try {
+      const stats = fs.statSync(filePath)
+      return { size: stats.size }
+    } catch {
+      return null
+    }
+  })
 
   // IPC: read image file and return base64 (fallback for thumbnails)
   ipcMain.handle('image:readBase64', async (_event, filePath: string) => {

@@ -1,10 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { ViewMode, KeyboardMode, FilterOptions, AppSettings, SortBy } from '../types/photo'
+import type { ViewMode, FilterOptions, AppSettings, SortBy } from '../types/photo'
 
 interface UIStore {
   viewMode: ViewMode
-  keyboardMode: KeyboardMode
   filterOptions: FilterOptions
   inspectorVisible: boolean
   thumbnailSize: number
@@ -15,7 +14,6 @@ interface UIStore {
   sortBy: SortBy
 
   setViewMode: (mode: ViewMode) => void
-  setKeyboardMode: (mode: KeyboardMode) => void
   setFilterOptions: (options: Partial<FilterOptions>) => void
   resetFilter: () => void
   toggleInspector: () => void
@@ -45,7 +43,6 @@ export const useUIStore = create<UIStore>()(
   persist(
     (set, get) => ({
       viewMode: 'grid',
-      keyboardMode: 'vim',
       filterOptions: { ...defaultFilter },
       inspectorVisible: true,
       thumbnailSize: 200,
@@ -56,7 +53,6 @@ export const useUIStore = create<UIStore>()(
       sortBy: 'created_at',
 
       setViewMode: (mode) => set({ viewMode: mode }),
-      setKeyboardMode: (mode) => set({ keyboardMode: mode }),
       setFilterOptions: (options) =>
         set((s) => ({
           filterOptions: { ...s.filterOptions, ...options },
@@ -72,7 +68,6 @@ export const useUIStore = create<UIStore>()(
       setShowingTrash: (open) => set({ showingTrash: open }),
       setSortBy: (sortBy) => set({ sortBy }),
       getSettings: () => ({
-        keyboardMode: get().keyboardMode,
         customShortcuts: {},
         thumbnailSize: get().thumbnailSize,
         sidebarWidth: 260,
@@ -83,7 +78,6 @@ export const useUIStore = create<UIStore>()(
     {
       name: 'photopeek-ui-store',
       partialize: (state) => ({
-        keyboardMode: state.keyboardMode,
         thumbnailSize: state.thumbnailSize,
         inspectorVisible: state.inspectorVisible,
       }),

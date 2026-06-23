@@ -109,6 +109,30 @@ export function syncEventJsonPhotos(eventId: string): void {
         let md: Record<string, any> = {}
         try { if (mdStr) md = JSON.parse(mdStr) } catch {}
 
+        // Collect versions for this photo
+        const vRows = db.exec(
+          `SELECT id, version_name, file_name, file_size, width, height,
+                  is_original, uploaded_by, uploaded_at, created_at
+           FROM photo_versions WHERE photo_id = ? ORDER BY is_original DESC, created_at ASC`,
+          [id],
+        )
+        let versions: any[] = []
+        if (vRows.length > 0) {
+          const { columns: vc, values: vv } = vRows[0]
+          versions = vv.map((vr) => ({
+            id: vr[vc.indexOf('id')],
+            versionName: vr[vc.indexOf('version_name')],
+            fileName: vr[vc.indexOf('file_name')],
+            fileSize: vr[vc.indexOf('file_size')],
+            width: vr[vc.indexOf('width')],
+            height: vr[vc.indexOf('height')],
+            isOriginal: (vr[vc.indexOf('is_original')] as number) === 1,
+            uploadedBy: vr[vc.indexOf('uploaded_by')] || null,
+            uploadedAt: vr[vc.indexOf('uploaded_at')] || null,
+            createdAt: vr[vc.indexOf('created_at')],
+          }))
+        }
+
         photos[id] = {
           fileName: row[columns.indexOf('file_name')] as string,
           fileSize: row[columns.indexOf('file_size')] as number,
@@ -124,6 +148,7 @@ export function syncEventJsonPhotos(eventId: string): void {
           tags: photoTagMap[id] || [],
           deletedAt: (row[columns.indexOf('deleted_at')] as string) || null,
           createdAt: (row[columns.indexOf('created_at')] as string) || null,
+          versions,
         }
       }
     }

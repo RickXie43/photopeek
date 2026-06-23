@@ -28,6 +28,7 @@ export interface Photo {
   deletedAt: string | null
   createdAt: string
   updatedAt: string
+  versionSummary?: string | null  // JSON string of version names, e.g. '["RAW","JPEG"]'
 }
 
 export interface TrashPhoto extends Photo {
@@ -53,6 +54,23 @@ export interface PhotoMetadata {
   [key: string]: unknown
 }
 
+export interface PhotoVersion {
+  id: string
+  photoId: string
+  versionName: string
+  filePath: string
+  fileName: string
+  fileSize: number
+  width: number
+  height: number
+  thumbnailPath: string | null
+  metadata: PhotoMetadata | null
+  isOriginal: boolean
+  uploadedBy: string | null
+  uploadedAt: string | null
+  createdAt: string
+}
+
 export interface Tag {
   id: string
   eventId: string | null
@@ -67,7 +85,6 @@ export interface PhotoTag {
 }
 
 export type ViewMode = 'grid' | 'loupe' | 'compare' | 'survey'
-export type KeyboardMode = 'vim' | 'macos' | 'custom'
 export type SortBy = 'created_at' | 'file_name'
 
 export interface FilterOptions {
@@ -84,7 +101,6 @@ export interface FilterOptions {
 }
 
 export interface AppSettings {
-  keyboardMode: KeyboardMode
   customShortcuts: Record<string, string>
   thumbnailSize: number
   sidebarWidth: number

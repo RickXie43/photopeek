@@ -26,7 +26,14 @@ export function ShareDialog({
   onClose: () => void
 }): React.JSX.Element {
   const { events, selectedEventId } = useEventStore()
-  const [targetEventId, setTargetEventId] = useState(selectedEventId || '')
+  const [targetEventId, setTargetEventId] = useState('')
+
+  // Sync to sidebar selection when dialog opens
+  useEffect(() => {
+    if (open) {
+      setTargetEventId(selectedEventId || '')
+    }
+  }, [open, selectedEventId])
   const [sharing, setSharing] = useState(false)
   const [shareInfo, setShareInfo] = useState<{ port: number; ips: string[]; url: string } | null>(null)
   const [error, setError] = useState('')

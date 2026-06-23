@@ -1,13 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
-import { useUIStore } from '../../stores/uiStore'
-import { FolderOpen, Keyboard, Image, Info, Trash2 } from 'lucide-react'
+import { FolderOpen, Info, Trash2 } from 'lucide-react'
 
 interface SettingsData {
   libraryPath: string
-  keyboardMode: 'vim' | 'macos' | 'custom'
-  thumbnailSize: number
   language: string
   nickname: string
 }
@@ -19,11 +16,8 @@ export function SettingsDialog({
   open: boolean
   onClose: () => void
 }): React.JSX.Element {
-  const { setKeyboardMode, setThumbnailSize } = useUIStore()
   const [settings, setSettings] = useState<SettingsData>({
     libraryPath: '',
-    keyboardMode: 'vim',
-    thumbnailSize: 200,
     language: 'zh-CN',
     nickname: '',
   })
@@ -52,8 +46,6 @@ export function SettingsDialog({
     setSaving(true)
     try {
       await window.electron.ipcRenderer.invoke('settings:update', {
-        keyboardMode: settings.keyboardMode,
-        thumbnailSize: settings.thumbnailSize,
         language: settings.language,
       })
       if (settings.libraryPath) {
@@ -62,8 +54,6 @@ export function SettingsDialog({
       if (settings.nickname) {
         await window.electron.ipcRenderer.invoke('settings:update', { nickname: settings.nickname } as any)
       }
-      setKeyboardMode(settings.keyboardMode)
-      setThumbnailSize(settings.thumbnailSize)
       onClose()
     } catch (err) {
       console.error('Failed to save settings:', err)
@@ -105,52 +95,6 @@ export function SettingsDialog({
           </div>
           <div className="text-xs text-gray-400 mt-1">
             照片将复制到此目录中的 events/ 文件夹下
-          </div>
-        </section>
-
-        <div className="h-px bg-gray-200 dark:bg-gray-700" />
-
-        {/* Keyboard Mode */}
-        <section>
-          <div className="flex items-center gap-2 mb-2">
-            <Keyboard size={16} className="text-gray-500" />
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-200">快捷键模式</span>
-          </div>
-          <div className="flex gap-2">
-            {(['vim', 'macos', 'custom'] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setSettings((s) => ({ ...s, keyboardMode: mode }))}
-                className={`px-4 py-1.5 text-sm rounded-lg border transition-colors ${
-                  settings.keyboardMode === mode
-                    ? 'bg-[#007AFF] text-white border-[#007AFF]'
-                    : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-gray-400'
-                }`}
-              >
-                {mode === 'vim' ? 'Vim 风格' : mode === 'macos' ? 'macOS 风格' : '自定义'}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <div className="h-px bg-gray-200 dark:bg-gray-700" />
-
-        {/* Thumbnail Size */}
-        <section>
-          <div className="flex items-center gap-2 mb-2">
-            <Image size={16} className="text-gray-500" />
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-200">缩略图大小</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <input
-              type="range"
-              min={80}
-              max={400}
-              value={settings.thumbnailSize}
-              onChange={(e) => setSettings((s) => ({ ...s, thumbnailSize: Number(e.target.value) }))}
-              className="flex-1 h-1 accent-[#007AFF]"
-            />
-            <span className="text-xs text-gray-500 w-8 text-right">{settings.thumbnailSize}px</span>
           </div>
         </section>
 

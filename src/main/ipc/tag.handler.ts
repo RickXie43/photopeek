@@ -190,6 +190,10 @@ export function registerTagHandlers(): void {
       }
     }
 
-    return rows.map(deserializePhoto)
+    const photos = rows.map(deserializePhoto)
+    // Attach version summary for GridView badges
+    const { attachVersionSummary } = await import('./photo.handler')
+    attachVersionSummary(db, photos)
+    return photos
   })
 }

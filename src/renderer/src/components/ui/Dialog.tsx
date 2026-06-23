@@ -32,7 +32,7 @@ export function Dialog({
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={(e) => {
         if (e.target === overlayRef.current) onClose()
       }}
@@ -41,7 +41,6 @@ export function Dialog({
         className={cn(
           'bg-white dark:bg-gray-800 rounded-2xl shadow-2xl no-drag',
           'w-full max-w-md mx-4 overflow-hidden',
-          'animate-in fade-in zoom-in-95 duration-200',
           className
         )}
       >

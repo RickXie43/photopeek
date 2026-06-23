@@ -22,11 +22,18 @@ export function ImportDialog({
   onImportComplete?: () => void
 }): React.JSX.Element {
   const { events, selectedEventId, addEvent } = useEventStore()
-  const [targetEventId, setTargetEventId] = useState(selectedEventId || '')
+  const [targetEventId, setTargetEventId] = useState('')
   const [previewFiles, setPreviewFiles] = useState<PreviewFile[]>([])
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<{ imported: number; skipped: number; errors: string[]; errorDetails?: string[]; totalError?: string } | null>(null)
+
+  // Sync target event with sidebar selection when dialog opens
+  React.useEffect(() => {
+    if (open) {
+      setTargetEventId(selectedEventId || '')
+    }
+  }, [open, selectedEventId])
 
   // Quick event creation
   const [showNewEventInput, setShowNewEventInput] = useState(false)

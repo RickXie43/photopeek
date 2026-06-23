@@ -59,7 +59,48 @@ export function InspectorPanel(): React.JSX.Element {
     })
   }
 
-  const meta = selectedPhoto?.metadata
+  // ── Version state ──────────────────────────────────────────────────────
+  const [versionCount, setVersionCount] = useState(0)
+  const [versions, setVersions] = useState<{ id: string; versionName: string; fileName: string; fileSize: number; width: number; height: number; metadata: any }[]>([])
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!selectedPhoto) { setVersionCount(0); setVersions([]); setSelectedVersionId(null); return }
+    window.electron.ipcRenderer.invoke('photos:listVersions', selectedPhoto.id)
+      .then((r: unknown) => {
+        const list = r as any[]
+        setVersions(list)
+        setVersionCount(list.length)
+        const orig = list.find((v: any) => v.isOriginal)
+        setSelectedVersionId(orig ? orig.id : (list[0]?.id || null))
+      })
+      .catch(() => { setVersionCount(0); setVersions([]) })
+  }, [selectedPhoto?.id])
+
+  // Derive display data from selected version, falling back to photo
+  const activeVersion = versions.find(v => v.id === selectedVersionId)
+  const displayFileName = activeVersion?.fileName || selectedPhoto?.fileName
+  const displayFileSize = activeVersion?.fileSize || selectedPhoto?.fileSize || 0
+  // Use version metadata dimensions when available (more reliable than stored width/height)
+  const versionMetaWidth = activeVersion?.metadata?.imageWidth
+  const versionMetaHeight = activeVersion?.metadata?.imageHeight
+  const displayWidth = versionMetaWidth || activeVersion?.width || selectedPhoto?.width || 0
+  const displayHeight = versionMetaHeight || activeVersion?.height || selectedPhoto?.height || 0
+  const activeVersionMeta = activeVersion?.metadata || null
+  const meta = activeVersionMeta || selectedPhoto?.metadata
+
+  // Auto-refresh metadata for versions that have null metadata
+  useEffect(() => {
+    if (!activeVersion || activeVersion.metadata) return
+    window.electron.ipcRenderer.invoke('photos:refreshMetadata', selectedPhoto!.id, activeVersion.id)
+      .then((result: any) => {
+        if (result.success) {
+          // Update the version's metadata in state
+          setVersions(prev => prev.map(v => v.id === activeVersion.id ? { ...v, metadata: result.metadata } : v))
+        }
+      })
+      .catch(() => {})
+  }, [activeVersion?.id])
 
   // Refresh metadata for the selected photo (manual trigger)
   const [refreshing, setRefreshing] = useState(false)
@@ -78,7 +119,7 @@ export function InspectorPanel(): React.JSX.Element {
     if (!refreshing) return
     const doRefresh = async (): Promise<void> => {
       try {
-        const result = await window.electron.ipcRenderer.invoke('photos:refreshMetadata', selectedPhoto!.id) as { success: boolean; metadata: any; debug?: string }
+        const result = await window.electron.ipcRenderer.invoke('photos:refreshMetadata', selectedPhoto!.id, selectedVersionId) as { success: boolean; metadata: any; debug?: string }
         if (result.success) {
           usePhotoStore.getState().updatePhoto(selectedPhoto!.id, { metadata: result.metadata })
         } else {
@@ -93,10 +134,29 @@ export function InspectorPanel(): React.JSX.Element {
     doRefresh()
   }, [refreshing])
 
+  useEffect(() => {
+    if (!selectedPhoto) { setVersionCount(0); setVersions([]); setSelectedVersionId(null); return }
+    window.electron.ipcRenderer.invoke('photos:listVersions', selectedPhoto.id)
+      .then((r: unknown) => {
+        const list = r as any[]
+        setVersions(list)
+        setVersionCount(list.length)
+        // Default: select original version or first
+        const orig = list.find((v: any) => v.isOriginal)
+        setSelectedVersionId(orig ? orig.id : (list[0]?.id || null))
+      })
+      .catch(() => { setVersionCount(0); setVersions([]) })
+  }, [selectedPhoto?.id])
+
+  // Parse versionSummary for badge display
+  const versionBadges = selectedPhoto?.versionSummary
+    ? (() => { try { return JSON.parse(selectedPhoto.versionSummary) as string[] } catch { return [] } })()
+    : []
+
   const infoItems = selectedPhoto ? [
-    { label: '文件名', value: selectedPhoto.fileName },
-    { label: '大小', value: formatFileSize(selectedPhoto.fileSize) },
-    { label: '分辨率', value: `${selectedPhoto.width} × ${selectedPhoto.height}` },
+    { label: '文件名', value: displayFileName || selectedPhoto.fileName },
+    { label: '大小', value: formatFileSize(displayFileSize) },
+    { label: '分辨率', value: `${displayWidth} × ${displayHeight}` },
     selectedPhoto.rating > 0 && { label: '评分', value: '★'.repeat(selectedPhoto.rating) + '☆'.repeat(5 - selectedPhoto.rating) },
     selectedPhoto.flag && { label: '标记', value: selectedPhoto.flag === 'pick' ? '✅ 留用' : '❌ 弃用' },
     meta?.dateTimeOriginal && { label: '拍摄时间', value: meta.dateTimeOriginal },
@@ -109,6 +169,9 @@ export function InspectorPanel(): React.JSX.Element {
     meta?.iso && { label: 'ISO', value: String(meta.iso) },
     meta?.orientation && { label: '方向', value: String(meta.orientation) },
     meta?.fileType && { label: '文件类型', value: meta.fileType },
+    activeVersion && { label: '当前版本', value: activeVersion.versionName },
+    activeVersion?.uploadedBy && { label: '修改用户', value: activeVersion.uploadedBy },
+    activeVersion?.uploadedAt && { label: '上传时间', value: new Date(activeVersion.uploadedAt).toLocaleString() },
     (meta?.gpsLatitude || meta?.gpsLongitude) && {
       label: 'GPS',
       value: `${meta.gpsLatitude?.toFixed(4) ?? '?'}, ${meta.gpsLongitude?.toFixed(4) ?? '?'}`,
@@ -119,8 +182,21 @@ export function InspectorPanel(): React.JSX.Element {
   return (
     <aside className="w-72 bg-[var(--color-sidebar)] border-l border-[var(--color-border)] flex flex-col overflow-y-auto">
       {/* Header */}
-      <div className="h-10 flex items-center px-4 border-b border-[var(--color-border)] shrink-0">
-        <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">信息</span>
+      <div className="h-10 flex items-center gap-2 px-4 border-b border-[var(--color-border)] shrink-0">
+        <span className="text-sm font-semibold text-gray-700 dark:text-gray-200 shrink-0">信息</span>
+        {versions.length > 0 && (
+          <select
+            value={selectedVersionId ?? ''}
+            onChange={(e) => setSelectedVersionId(e.target.value || null)}
+            className="text-[10px] bg-transparent border border-gray-300 dark:border-gray-600 rounded px-1 py-0.5 text-gray-600 dark:text-gray-300 max-w-[140px] truncate focus:outline-none"
+          >
+            {versions.map(v => (
+              <option key={v.id} value={v.id}>
+                {v.versionName} {v.isOriginal ? '★' : ''}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Main content area */}

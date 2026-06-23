@@ -4,7 +4,6 @@ import * as os from 'os'
 
 export interface PhotoPeekConfig {
   libraryPath: string
-  keyboardMode: 'vim' | 'macos' | 'custom'
   thumbnailSize: number
   autoSaveDb: boolean
   language: string
@@ -13,7 +12,6 @@ export interface PhotoPeekConfig {
 
 const DEFAULT_CONFIG: PhotoPeekConfig = {
   libraryPath: path.join(os.homedir(), 'Pictures', 'PhotoPeek'),
-  keyboardMode: 'vim',
   thumbnailSize: 200,
   autoSaveDb: true,
   language: 'zh-CN',

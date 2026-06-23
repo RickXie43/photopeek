@@ -1,13 +1,50 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { usePhotoStore } from '../../stores/photoStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEventStore } from '../../stores/eventStore'
 import { cn } from '../../lib/cn'
-import { X, ChevronLeft, ChevronRight, ImageIcon, RotateCcw, Trash2 } from 'lucide-react'
+import { ImageIcon, RotateCcw, Trash2 } from 'lucide-react'
+import { LoupeView } from './LoupeView'
 
 // Convert Windows path to photo:/// URL (forward slashes)
 function toPhotoUrl(p: string): string {
   return `photo:///${p.replace(/\\/g, '/')}`
+}
+
+/** Abbreviate version name for badge display */
+function abbreviateVersion(v: string): { label: string; cls: string } {
+  // Direct format names (new style) or prefixed (old style for compatibility)
+  const raw = ['RAW', 'DNG', '原始RAW', '原始DNG']
+  if (raw.includes(v)) return { label: v.startsWith('原始') ? v.slice(2) : v, cls: 'bg-yellow-500/80 text-black' }
+  if (v === 'JPEG' || v === '相机JPEG') return { label: 'JPEG', cls: 'bg-blue-500/80 text-white' }
+  if (v === 'PNG' || v === '相机PNG') return { label: 'PNG', cls: 'bg-blue-500/80 text-white' }
+  if (v === 'HEIC' || v === '相机HEIC') return { label: 'HEIC', cls: 'bg-blue-500/80 text-white' }
+  if (v === 'TIFF' || v === '原始TIFF') return { label: 'TIFF', cls: 'bg-cyan-600/80 text-white' }
+  if (v === 'AVIF' || v === '相机AVIF') return { label: 'AVIF', cls: 'bg-blue-500/80 text-white' }
+  // User uploads / edits
+  if (v.includes('修图') || v.includes('上传') || v.includes('手机')) return { label: '修', cls: 'bg-green-500/80 text-white' }
+  return { label: v.slice(0, 3), cls: 'bg-purple-500/80 text-white' }
+}
+
+/** Parse versionSummary JSON and return unique badge entries (skip dups, show first 3 max) */
+function getVersionBadges(photo: { versionSummary?: string | null }): { label: string; cls: string }[] {
+  if (!photo.versionSummary) return []
+  try {
+    const names: string[] = JSON.parse(photo.versionSummary)
+    const seen = new Set<string>()
+    const badges: { label: string; cls: string }[] = []
+    for (const n of names) {
+      const b = abbreviateVersion(n)
+      if (!seen.has(b.label)) {
+        seen.add(b.label)
+        badges.push(b)
+        if (badges.length >= 3) break
+      }
+    }
+    return badges
+  } catch {
+    return []
+  }
 }
 
 export function GridView(): React.JSX.Element {
@@ -212,19 +249,24 @@ export function GridView(): React.JSX.Element {
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-gray-400"><ImageIcon size={24} /></div>
               )}
-              <div className="absolute top-1 left-1 flex gap-0.5">
-                {photo.flag === 'pick' && <span className="text-[9px] font-bold text-green-300 bg-green-900/80 px-1 py-0.5 rounded">P</span>}
-                {photo.flag === 'reject' && <span className="text-[9px] font-bold text-red-300 bg-red-900/80 px-1 py-0.5 rounded">X</span>}
-                {photo.needsEdit && <span className="text-[9px] font-medium text-blue-300 bg-blue-900/80 px-1 py-0.5 rounded">修</span>}
+              <div className="absolute top-1 left-1 flex gap-0.5 flex-wrap max-w-[70%]" style={{ fontSize: Math.max(8, thumbnailSize / 18) + 'px' }}>
+                {/* Version badges */}
+                {getVersionBadges(photo).map((b, i) => (
+                  <span key={i} className={`font-medium px-0.5 py-0.5 rounded min-w-[3ch] text-center ${b.cls}`}>{b.label}</span>
+                ))}
+                {/* Flag badges */}
+                {photo.flag === 'pick' && <span className="font-medium text-green-300 bg-green-900/80 px-0.5 py-0.5 rounded">P</span>}
+                {photo.flag === 'reject' && <span className="font-medium text-red-300 bg-red-900/80 px-0.5 py-0.5 rounded">X</span>}
+                {photo.needsEdit && <span className="font-medium text-blue-300 bg-blue-900/80 px-0.5 py-0.5 rounded">修</span>}
               </div>
 
               {/* Tag names (bottom-left) */}
               {photoTags[photo.id] && photoTags[photo.id].length > 0 && (
-                <div className="absolute bottom-1 left-1 flex flex-wrap gap-0.5 max-w-[60%]">
+                <div className="absolute bottom-1 left-1 flex flex-wrap gap-0.5 max-w-[60%]" style={{ fontSize: Math.max(8, thumbnailSize / 18) + 'px' }}>
                   {photoTags[photo.id].slice(0, 3).map(tag => (
                     <span
                       key={tag.id}
-                      className="text-[8px] font-medium text-white px-1 py-0.5 rounded truncate"
+                      className="font-medium text-white px-1 py-0.5 rounded truncate"
                       style={{ backgroundColor: tag.color.replace('hsl(', 'hsla(').replace(')', ', 0.73)') }}
                       title={tag.name}
                     >
@@ -232,7 +274,7 @@ export function GridView(): React.JSX.Element {
                     </span>
                   ))}
                   {photoTags[photo.id].length > 3 && (
-                    <span className="text-[8px] text-white bg-black/50 px-1 py-0.5 rounded">
+                    <span className="text-white bg-black/50 px-1 py-0.5 rounded">
                       +{photoTags[photo.id].length - 3}
                     </span>
                   )}
@@ -266,187 +308,12 @@ export function GridView(): React.JSX.Element {
       </div>
 
       {previewIndex !== null && displayPhotos[previewIndex] && (
-        <PhotoPreview
-          photo={displayPhotos[previewIndex]}
-          index={previewIndex}
-          total={displayPhotos.length}
-          onPrev={() => goTo(previewIndex - 1)}
-          onNext={() => goTo(previewIndex + 1)}
-          onClose={() => setPreviewIndex(null)}
-          prevFilePath={previewIndex > 0 ? displayPhotos[previewIndex - 1]?.filePath : undefined}
-          nextFilePath={previewIndex < displayPhotos.length - 1 ? displayPhotos[previewIndex + 1]?.filePath : undefined}
-        />
+        <div className="fixed inset-0 z-50 flex flex-col" data-loupe="true">
+          <LoupeView onClose={() => setPreviewIndex(null)} />
+        </div>
       )}
     </div>
   )
 }
 
-function PhotoPreview({
-  photo, index, total, onPrev, onNext, onClose, prevFilePath, nextFilePath,
-}: {
-  photo: { id: string; eventId: string; filePath: string; fileName: string; thumbnailPath?: string | null }
-  index: number; total: number
-  onPrev: () => void; onNext: () => void; onClose: () => void
-  prevFilePath?: string; nextFilePath?: string
-}): React.JSX.Element {
-  const [zoom, setZoom] = useState(1)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
-  const [dragging, setDragging] = useState(false)
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const [fullLoaded, setFullLoaded] = useState(false)
-  const [photoTags, setPhotoTags] = useState<{ id: string; name: string; color: string }[]>([])
-  const [eventTags, setEventTags] = useState<{ id: string; name: string; color: string }[]>([])
-  const [nickname, setNickname] = useState('')
-  const overlayRef = useRef<HTMLDivElement>(null)
 
-  // Load tags and settings
-  useEffect(() => {
-    window.electron.ipcRenderer.invoke('tags:listForPhoto', photo.id).then((r: unknown) => {
-      setPhotoTags(r as { id: string; name: string; color: string }[])
-    }).catch(() => {})
-    window.electron.ipcRenderer.invoke('tags:list', photo.eventId).then((r: unknown) => {
-      setEventTags(r as { id: string; name: string; color: string }[])
-    }).catch(() => {})
-    window.electron.ipcRenderer.invoke('settings:get').then((r: unknown) => {
-      setNickname((r as any).nickname || '')
-    }).catch(() => {})
-  }, [photo.id, photo.eventId])
-
-  // Force focus onto the overlay so keyboard events are captured
-  useEffect(() => {
-    overlayRef.current?.focus()
-  }, [photo.id])
-
-  const thumbSrc = photo.thumbnailPath ? toPhotoUrl(photo.thumbnailPath) : null
-  const fullSrc = photo.filePath ? toPhotoUrl(photo.filePath) : ''
-
-  // Use refs to avoid stale closures in the window event listener
-  const eventTagsRef = useRef(eventTags)
-  const photoTagsRef = useRef(photoTags)
-  const nicknameRef = useRef(nickname)
-  const onCloseRef = useRef(onClose)
-  const onPrevRef = useRef(onPrev)
-  const onNextRef = useRef(onNext)
-  eventTagsRef.current = eventTags
-  photoTagsRef.current = photoTags
-  nicknameRef.current = nickname
-  onCloseRef.current = onClose
-  onPrevRef.current = onPrev
-  onNextRef.current = onNext
-
-  const handleKeyEvent = useCallback((e: KeyboardEvent): void => {
-    if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current(); return }
-    if (e.key === ' ' || e.key === 'Space') {
-      e.preventDefault()
-      e.stopPropagation()
-      const tags = eventTagsRef.current
-      const curTags = photoTagsRef.current
-      const nick = nicknameRef.current
-      const evId = photo.eventId
-      const phId = photo.id
-
-      // Determine tag name: nickname from settings, or "默认" as fallback
-      const tagName = nick || '默认'
-      const nicknameTag = tags.find(t => t.name === tagName)
-
-      if (!nicknameTag) {
-        // Auto-create the nickname tag (first time or nickname changed)
-        window.electron.ipcRenderer.invoke('tags:create', { eventId: evId, name: tagName })
-          .then((created: unknown) => {
-            const newTag = created as { id: string; name: string; color: string; error?: string }
-            if (newTag.error) { return }
-            // Add tag to photo immediately
-            window.electron.ipcRenderer.invoke('tags:addToPhoto', {
-              photoId: phId, tagId: newTag.id, eventId: evId,
-            }).then(() => {
-              setPhotoTags(prev => [...prev, { id: newTag.id, name: newTag.name, color: newTag.color }])
-              setEventTags(prev => [...prev, { id: newTag.id, name: newTag.name, color: newTag.color }])
-              window.dispatchEvent(new Event('refresh-tags'))
-            }).catch(() => {})
-          }).catch(() => {})
-        return
-      }
-
-      // Toggle the nickname tag on/off the photo
-      window.electron.ipcRenderer.invoke('tags:toggleOnPhoto', {
-        photoId: phId, tagId: nicknameTag.id, eventId: evId,
-      }).then((res: unknown) => {
-        const hasTag = (res as { hasTag: boolean }).hasTag
-        setPhotoTags(hasTag
-          ? [...curTags, nicknameTag]
-          : curTags.filter(t => t.id !== nicknameTag.id)
-        )
-        window.dispatchEvent(new Event('refresh-tags'))
-      }).catch(() => {})
-      return
-    }
-    if (e.key === 'ArrowLeft' || e.key === 'h') { e.preventDefault(); e.stopPropagation(); onPrevRef.current?.(); return }
-    if (e.key === 'ArrowRight' || e.key === 'l') { e.preventDefault(); e.stopPropagation(); onNextRef.current?.(); return }
-    if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); e.stopPropagation(); onPrevRef.current?.(); return }
-    if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); e.stopPropagation(); onNextRef.current?.(); return }
-  }, [photo.id, photo.eventId])
-
-  // Listen on window (capture phase to intercept before other handlers)
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyEvent, { capture: true })
-    return () => window.removeEventListener('keydown', handleKeyEvent, { capture: true })
-  }, [handleKeyEvent])
-
-  return (
-    <div
-      ref={overlayRef}
-      className="fixed inset-0 z-50 bg-black/90 flex flex-col overflow-hidden"
-      tabIndex={-1}
-      onDoubleClick={() => { setZoom(z => z === 1 ? 2 : 1); setPan({x:0,y:0}) }}
-      onWheel={(e) => { e.preventDefault(); setZoom(z => Math.max(0.25, Math.min(5, z + (e.deltaY > 0 ? -0.25 : 0.25)))) }}
-      onMouseDown={(e) => { if (zoom > 1) { setDragging(true); setDragStart({x:e.clientX-pan.x, y:e.clientY-pan.y}) } }}
-      onMouseMove={(e) => { if (dragging) setPan({x:e.clientX-dragStart.x, y:e.clientY-dragStart.y}) }}
-      onMouseUp={() => setDragging(false)}
-      onMouseLeave={() => setDragging(false)}
-      style={{ cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
-    >
-      <div className="h-11 flex items-center justify-between px-4 bg-black/50 text-white/80 shrink-0 z-10">
-        <div className="flex items-center gap-3 text-sm">
-          <button onClick={onClose} className="flex items-center gap-1 hover:text-white"><X size={18} />关闭</button>
-          <span className="text-white/70">{photo.fileName}</span>
-          {/* Tags in toolbar */}
-          {photoTags.map(tag => (
-            <span key={tag.id} className="px-1.5 py-0.5 rounded text-[10px] font-medium"
-              style={{ backgroundColor: tag.color.replace('hsl(', 'hsla(').replace(')', ', 0.19)'), color: tag.color }}>
-              {tag.name}
-            </span>
-          ))}
-        </div>
-        <div className="flex items-center gap-4 text-xs">
-          <span className="text-white/50">{index + 1} / {total}</span>
-          {nickname && eventTags.length > 0 && (
-            <span className="text-white/40 text-[10px]">空格键打标签</span>
-          )}
-          <button onClick={() => { setZoom(z => z === 1 ? 2 : 1); setPan({x:0,y:0}) }} className="hover:text-white">{zoom === 1 ? '200%' : '100%'}</button>
-          <span className="text-white/50">{Math.round(zoom * 100)}%</span>
-        </div>
-      </div>
-      <div className="flex-1 flex items-center justify-center relative overflow-hidden">
-        {thumbSrc && <img src={thumbSrc} alt="" className="absolute inset-0 w-full h-full object-contain" style={{ opacity: fullLoaded ? 0 : 1, transition: 'opacity 0.3s' }} draggable={false} />}
-        {fullSrc && <img src={fullSrc} alt={photo.fileName} className="max-w-full max-h-full" style={{ transform: `scale(${zoom}) translate(${pan.x/zoom}px, ${pan.y/zoom}px)`, opacity: fullLoaded ? 1 : 0, transition: 'opacity 0.3s' }} draggable={false} onLoad={() => setFullLoaded(true)} />}
-
-        {/* Tag names on image (bottom-right) */}
-        {photoTags.length > 0 && (
-          <div className="absolute bottom-4 right-4 flex flex-wrap gap-1 justify-end max-w-[60%]">
-            {photoTags.map(tag => (
-              <span key={tag.id} className="px-2 py-0.5 rounded text-[11px] font-medium shadow-lg text-white"
-                style={{ backgroundColor: tag.color.replace('hsl(', 'hsla(').replace(')', ', 0.8)') }}>
-                {tag.name}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {index > 0 && <button onClick={(e) => { e.stopPropagation(); onPrev() }} className="absolute left-4 top-1/2 -translate-y-1/2 p-2 bg-black/40 hover:bg-black/70 rounded-full text-white"><ChevronLeft size={28} /></button>}
-        {index < total - 1 && <button onClick={(e) => { e.stopPropagation(); onNext() }} className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-black/40 hover:bg-black/70 rounded-full text-white"><ChevronRight size={28} /></button>}
-        {prevFilePath && <img src={toPhotoUrl(prevFilePath)} className="hidden" alt="" />}
-        {nextFilePath && <img src={toPhotoUrl(nextFilePath)} className="hidden" alt="" />}
-      </div>
-    </div>
-  )
-}

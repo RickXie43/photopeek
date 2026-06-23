@@ -33,7 +33,12 @@ export async function parseMetadata(filePath: string): Promise<PhotoMetadata | n
       // translateKeys: true returns PascalCase keys (e.g. "Make", "Model", "DateTimeOriginal")
       if (output.Make) result.cameraMake = output.Make
       if (output.Model) result.cameraModel = output.Model
-      if (output.DateTimeOriginal) result.dateTimeOriginal = output.DateTimeOriginal
+      if (output.DateTimeOriginal) {
+        // exifr with translateKeys may return a Date object — convert to string
+        result.dateTimeOriginal = output.DateTimeOriginal instanceof Date
+          ? output.DateTimeOriginal.toISOString()
+          : String(output.DateTimeOriginal)
+      }
       if (output.LensModel) result.lensModel = output.LensModel
       if (output.FocalLength != null) result.focalLength = String(output.FocalLength)
       if (output.FNumber != null) result.aperture = String(output.FNumber)
@@ -56,7 +61,15 @@ export async function parseMetadata(filePath: string): Promise<PhotoMetadata | n
         const sharpMeta = await sharp(filePath).metadata()
         if (sharpMeta.width) result.imageWidth = sharpMeta.width
         if (sharpMeta.height) result.imageHeight = sharpMeta.height
-      } catch {}
+      } catch {
+        // For RAW files where sharp fails, try getting dimensions from EXIF directly
+        const { getRawDimensions } = await import('./thumbnail.service')
+        const dims = await getRawDimensions(filePath)
+        if (dims) {
+          result.imageWidth = dims.width
+          result.imageHeight = dims.height
+        }
+      }
     }
 
     // Return null if nothing was parsed
