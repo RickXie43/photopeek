@@ -9,6 +9,7 @@ import { registerImportHandlers } from './ipc/import.handler'
 import { registerCacheHandlers } from './ipc/cache.handler'
 import { registerTagHandlers } from './ipc/tag.handler'
 import { registerShareHandlers } from './ipc/share.handler'
+import { registerUpdateHandlers } from './ipc/update.handler'
 import { getConfig, saveConfig, updateLibraryPath, getLibraryPath, type PhotoPeekConfig } from './services/library.service'
 import * as fs from 'fs'
 
@@ -93,19 +94,18 @@ app.whenReady().then(async () => {
         '.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png',
         '.gif':'image/gif','.webp':'image/webp','.bmp':'image/bmp',
       }
-      // RAW files: serve embedded JPEG preview directly (no upscaling, keeps camera-native resolution)
+      // RAW files: serve a large preview (2600px) for best clarity in LoupeView
       const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
       if (RAW_EXTS.has(ext)) {
-        const { getRawPreviewBuffer } = await import('./services/thumbnail.service')
-        const previewBuf = await getRawPreviewBuffer(filePath)
+        const { generateLargePreview } = await import('./services/thumbnail.service')
+        const previewBuf = await generateLargePreview(filePath)
         if (previewBuf) {
-          console.log(`[photo protocol] RAW preview size: ${(previewBuf.length / 1024).toFixed(0)}KB for ${path.basename(filePath)}`)
-          return new Response(previewBuf, { headers: { 'content-type': 'image/jpeg' } })
+          return new Response(new Uint8Array(previewBuf), { headers: { 'content-type': 'image/jpeg' } })
         }
         return new Response(null, { status: 415 })
       }
       const buf = fs.readFileSync(filePath)
-      return new Response(buf, {
+      return new Response(new Uint8Array(buf), {
         headers: { 'content-type': mimes[ext] || 'image/jpeg' }
       })
     } catch (err) {
@@ -292,6 +292,7 @@ app.whenReady().then(async () => {
   registerCacheHandlers()
   registerTagHandlers()
   registerShareHandlers()
+  registerUpdateHandlers()
 
   // Settings IPC
   ipcMain.handle('settings:get', () => {

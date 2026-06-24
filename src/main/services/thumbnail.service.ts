@@ -81,9 +81,9 @@ export async function generateThumbnail(
       // Many cameras embed a full-size JPEG inside RAW (CR2, NEF, ARW, etc.)
       try {
         console.log(`[Thumbnail] Extracting embedded JPEG from RAW: ${path.basename(sourcePath)}`)
-        const thumbData: ArrayBuffer | null = await exifr.thumbnail(safePath)
+        const thumbData: any = await exifr.thumbnail(safePath)
         if (thumbData) {
-          const buf = Buffer.from(thumbData)
+          const buf = Buffer.from(thumbData as ArrayBuffer)
           pipeline = sharp(buf)
         } else {
           // Fallback: try sharp directly (may fail for some RAW but worth a try)
@@ -142,39 +142,11 @@ export async function getRawPreviewBuffer(filePath: string): Promise<Buffer | nu
     try { return await sharp(filePath).jpeg().toBuffer() } catch { return null }
   }
   try {
-    // exifr.thumbnail() extracts the embedded preview JPEG — size varies by camera
+    // exifr.thumbnail() extracts the embedded preview JPEG — its size varies by camera
     const thumbData = await exifr.thumbnail(filePath)
-    if (thumbData) {
-      const buf = Buffer.from(thumbData)
-      // Check if the embedded preview is large enough (>500px on longest side)
-      try {
-        const meta = await sharp(buf).metadata()
-        const maxDim = Math.max(meta.width || 0, meta.height || 0)
-        console.log(`[RawPreview] exifr returned ${meta.width}×${meta.height} for ${path.basename(filePath)}`)
-        if (maxDim >= 500) return buf
-        // Too small — fall through to try sharp or other methods
-        console.log(`[RawPreview] Embedded preview too small (${maxDim}px), trying fallback`)
-      } catch {
-        // Can't determine size, use it anyway
-        return buf
-      }
-    }
-    // Fallback: try sharp directly (may work for some RAW formats)
-    try {
-      const directBuf = await sharp(filePath).jpeg().toBuffer()
-      console.log(`[RawPreview] sharp direct succeeded for ${path.basename(filePath)}`)
-      return directBuf
-    } catch {}
-    // Last resort: try exifr.parse with thumbnail option (different extraction path)
-    try {
-      const parsed = await exifr.parse(filePath, { thumbnail: true } as any) as any
-      if (parsed?.thumbnail) {
-        const buf2 = Buffer.from(parsed.thumbnail)
-        console.log(`[RawPreview] exifr.parse thumbnail fallback: ${buf2.length / 1024}KB for ${path.basename(filePath)}`)
-        return buf2
-      }
-    } catch {}
-    return null
+    if (thumbData) return Buffer.from(thumbData)
+    // Fallback: try sharp directly
+    return await sharp(filePath).jpeg().toBuffer()
   } catch {
     return null
   }
@@ -213,9 +185,9 @@ export async function getRawDimensions(filePath: string): Promise<{ width: numbe
 }
 
 const MEDIUM_SIZE = 1200
-const MEDIUM_QUALITY = 65
-const LARGE_SIZE = 2600
-const LARGE_QUALITY = 80
+const MEDIUM_QUALITY = 80
+const LARGE_SIZE = 3000
+const LARGE_QUALITY = 92
 
 async function resizeWithSharp(
   sourcePath: string,
@@ -224,35 +196,57 @@ async function resizeWithSharp(
   cacheDir: string,
   cacheKey: string,
 ): Promise<Buffer | null> {
+  let tempHandle: { path: string; cleanup: () => void } | null = null
   try {
     fs.mkdirSync(cacheDir, { recursive: true })
     const cachePath = path.join(cacheDir, cacheKey + '_' + maxSize + '.jpg')
     if (fs.existsSync(cachePath)) {
+      console.log('[Medium] Cache hit:', cachePath)
       return fs.readFileSync(cachePath)
     }
+    console.log('[Medium] Cache miss, generating for', sourcePath, 'cacheKey:', cacheKey, 'maxSize:', maxSize)
+
+    // Use ASCII-safe path for sharp (workaround for Unicode path issues on Windows)
+    tempHandle = ensureAsciiPath(sourcePath)
+    const safePath = tempHandle.path
+    console.log('[Medium] Using path for sharp:', safePath)
 
     let pipeline = sharp()
     const ext = path.extname(sourcePath).toLowerCase()
 
     if (RAW_EXTENSIONS.has(ext)) {
-      const rawBuf = await getRawPreviewBuffer(sourcePath)
-      if (!rawBuf) return null
+      console.log('[Medium] RAW file detected, extracting preview')
+      const rawBuf = await getRawPreviewBuffer(safePath)
+      if (!rawBuf) {
+        console.warn('[Medium] getRawPreviewBuffer returned null')
+        return null
+      }
+      console.log('[Medium] RAW preview extracted, size:', rawBuf.length)
       pipeline = sharp(rawBuf)
     } else {
-      pipeline = sharp(sourcePath)
+      pipeline = sharp(safePath)
     }
 
+    console.log('[Medium] Starting sharp pipeline (resize+jpeg)...')
     const buf = await pipeline
       .rotate()
       .resize(maxSize, maxSize, { fit: 'inside' })
       .jpeg({ quality })
       .toBuffer()
+    console.log('[Medium] Sharp pipeline OK, output size:', buf.length)
 
-    fs.writeFile(cachePath, buf, () => {})
+    fs.writeFileSync(cachePath, buf)
+    console.log('[Medium] Cached to:', cachePath)
     return buf
-  } catch (err) {
-    console.error(`[Thumbnail] resizeWithSharp failed for ${sourcePath}:`, err)
+  } catch (err: any) {
+    console.error(`[Medium] resizeWithSharp FAILED for ${sourcePath}:`, err?.message || err)
+    console.error('[Medium] Stack:', err?.stack)
     return null
+  } finally {
+    if (tempHandle) {
+      console.log('[Medium] Cleaning up temp file')
+      tempHandle.cleanup()
+    }
   }
 }
 

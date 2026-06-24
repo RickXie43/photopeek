@@ -11,6 +11,16 @@ function toPhotoUrl(p: string): string {
   return `photo:///${p.replace(/\\/g, '/')}`
 }
 
+/** Generate a consistent color from a username string */
+function userColor(username: string): string {
+  let hash = 0
+  for (let i = 0; i < username.length; i++) {
+    hash = username.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  const hue = Math.abs(hash) % 360
+  return `hsl(${hue}, 55%, 45%)`
+}
+
 /** Abbreviate version name for badge display */
 function abbreviateVersion(v: string): { label: string; cls: string } {
   // Direct format names (new style) or prefixed (old style for compatibility)
@@ -21,29 +31,41 @@ function abbreviateVersion(v: string): { label: string; cls: string } {
   if (v === 'HEIC' || v === '相机HEIC') return { label: 'HEIC', cls: 'bg-blue-500/80 text-white' }
   if (v === 'TIFF' || v === '原始TIFF') return { label: 'TIFF', cls: 'bg-cyan-600/80 text-white' }
   if (v === 'AVIF' || v === '相机AVIF') return { label: 'AVIF', cls: 'bg-blue-500/80 text-white' }
-  // User uploads / edits
+  // User uploads / edits (format: username_number)
   if (v.includes('修图') || v.includes('上传') || v.includes('手机')) return { label: '修', cls: 'bg-green-500/80 text-white' }
-  return { label: v.slice(0, 3), cls: 'bg-purple-500/80 text-white' }
+  return { label: v.replace(/_/g, ' · '), cls: '' }
 }
 
-/** Parse versionSummary JSON and return unique badge entries (skip dups, show first 3 max) */
-function getVersionBadges(photo: { versionSummary?: string | null }): { label: string; cls: string }[] {
-  if (!photo.versionSummary) return []
+// Standard format abbreviation names for grouping
+const FORMAT_BADGES = new Set(['RAW', 'DNG', 'JPEG', 'PNG', 'HEIC', 'TIFF', 'AVIF', '修'])
+
+/** Parse versionSummary JSON and return badges grouped: { formats: [...], users: [...] } */
+function getVersionBadges(photo: { versionSummary?: string | null }): { formats: { label: string; cls: string }[]; users: { label: string; cls: string; color: string }[] } {
+  const result = { formats: [] as { label: string; cls: string }[], users: [] as { label: string; cls: string; color: string }[] }
+  if (!photo.versionSummary) return result
   try {
     const names: string[] = JSON.parse(photo.versionSummary)
-    const seen = new Set<string>()
-    const badges: { label: string; cls: string }[] = []
+    const seenFormats = new Set<string>()
+    const seenUsers = new Set<string>()
     for (const n of names) {
       const b = abbreviateVersion(n)
-      if (!seen.has(b.label)) {
-        seen.add(b.label)
-        badges.push(b)
-        if (badges.length >= 3) break
+      if (FORMAT_BADGES.has(b.label)) {
+        if (!seenFormats.has(b.label)) {
+          seenFormats.add(b.label)
+          result.formats.push(b)
+        }
+      } else {
+        if (!seenUsers.has(b.label)) {
+          seenUsers.add(b.label)
+          // Extract username for color
+          const userName = n.includes('_') ? n.split('_')[0] : n.slice(0, 6)
+          result.users.push({ ...b, color: userColor(userName) })
+        }
       }
     }
-    return badges
+    return result
   } catch {
-    return []
+    return result
   }
 }
 
@@ -249,11 +271,30 @@ export function GridView(): React.JSX.Element {
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-gray-400"><ImageIcon size={24} /></div>
               )}
-              <div className="absolute top-1 left-1 flex gap-0.5 flex-wrap max-w-[70%]" style={{ fontSize: Math.max(8, thumbnailSize / 18) + 'px' }}>
-                {/* Version badges */}
-                {getVersionBadges(photo).map((b, i) => (
-                  <span key={i} className={`font-medium px-0.5 py-0.5 rounded min-w-[3ch] text-center ${b.cls}`}>{b.label}</span>
-                ))}
+              <div className="absolute top-1 left-1 flex flex-col gap-0.5" style={{ fontSize: Math.max(8, thumbnailSize / 18) + 'px' }}>
+                {/* Version badges: original formats row */}
+                {(() => {
+                  const badges = getVersionBadges(photo)
+                  return (
+                    <>
+                      {badges.formats.length > 0 && (
+                        <div className="flex gap-0.5 flex-wrap">
+                          {badges.formats.map((b, i) => (
+                            <span key={i} className={`font-medium px-0.5 py-0.5 rounded min-w-[3ch] text-center ${b.cls}`}>{b.label}</span>
+                          ))}
+                        </div>
+                      )}
+                      {/* Version badges: user uploads row */}
+                      {badges.users.length > 0 && (
+                        <div className="flex gap-0.5 flex-wrap">
+                          {badges.users.map((b, i) => (
+                            <span key={i} className="font-medium px-0.5 py-0.5 rounded min-w-[3ch] text-center text-white" style={{ backgroundColor: b.color }}>{b.label}</span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )
+                })()}
                 {/* Flag badges */}
                 {photo.flag === 'pick' && <span className="font-medium text-green-300 bg-green-900/80 px-0.5 py-0.5 rounded">P</span>}
                 {photo.flag === 'reject' && <span className="font-medium text-red-300 bg-red-900/80 px-0.5 py-0.5 rounded">X</span>}

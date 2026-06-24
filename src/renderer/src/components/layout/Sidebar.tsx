@@ -14,6 +14,23 @@ export function Sidebar(): React.JSX.Element {
   const [connectedUsers, setConnectedUsers] = useState<{ id: string; nickname: string; joinedAt: string }[]>([])
   const [sharingEventId, setSharingEventId] = useState('')
   const [sharingEventName, setSharingEventName] = useState('')
+  const [eventThumbs, setEventThumbs] = useState<Record<string, string[]>>({})
+
+  // Load thumbnail previews for all events on mount and when events change
+  useEffect(() => {
+    const load = async (): Promise<void> => {
+      const thumbMap: Record<string, string[]> = {}
+      for (const ev of events) {
+        try {
+          const thumbs = await window.electron.ipcRenderer.invoke('events:getThumbnails', ev.id) as string[]
+          thumbMap[ev.id] = thumbs
+        } catch { thumbMap[ev.id] = [] }
+      }
+      setEventThumbs(thumbMap)
+    }
+    if (events.length > 0) load()
+    else setEventThumbs({})
+  }, [events])
 
   // Listen for share user updates
   useEffect(() => {
@@ -155,6 +172,7 @@ export function Sidebar(): React.JSX.Element {
                   onChange={(e) => setEditName(e.target.value)}
                   onBlur={handleFinishRename}
                   onKeyDown={(e) => {
+                    e.stopPropagation()
                     if (e.key === 'Enter') handleFinishRename()
                     if (e.key === 'Escape') setEditingId(null)
                   }}
@@ -176,9 +194,31 @@ export function Sidebar(): React.JSX.Element {
                     }}
                     className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
                   >
-                    {/* Cover thumbnail placeholder */}
-                    <div className="w-8 h-8 rounded-md bg-gray-300 dark:bg-gray-600 shrink-0 flex items-center justify-center text-[10px] text-gray-500">
-                      📷
+                    {/* Event thumbnail grid (scattered overlapping style) */}
+                    <div className="w-9 h-9 shrink-0 relative">
+                      {(eventThumbs[event.id] || []).slice(0, 4).map((thumb, i) => {
+                        const positions = [
+                          'top-[2px] left-[2px] rotate-[-6deg] z-[3]',
+                          'top-[1px] right-[1px] rotate-[4deg] z-[2]',
+                          'bottom-[1px] left-[1px] rotate-[8deg] z-[1]',
+                          'bottom-[2px] right-[2px] rotate-[-3deg] z-[0]',
+                        ]
+                        return (
+                          <img
+                            key={i}
+                            className={`absolute w-[calc(100%-6px)] h-[calc(100%-6px)] rounded-[3px] object-cover border border-white/30 ${positions[i]}`}
+                            src={'photo:///' + thumb.replace(/\\/g, '/')}
+                            alt=""
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                        )
+                      })}
+                      {/* Fallback when no thumbnails */}
+                      {(eventThumbs[event.id] || []).length === 0 && (
+                        <div className="w-full h-full rounded-md bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-[10px] text-gray-500">
+                          📷
+                        </div>
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm truncate">{event.name}</div>

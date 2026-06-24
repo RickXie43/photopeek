@@ -21,6 +21,16 @@ const shareApi = {
     ipcRenderer.on('share:tunnel-status', handler)
     return () => ipcRenderer.removeListener('share:tunnel-status', handler)
   },
+  onVersionAdded: (callback: (data: { photoId: string; versionId: string; versionName: string; uploadedBy: string; timestamp: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any): void => callback(data)
+    ipcRenderer.on('share:version-added', handler)
+    return () => ipcRenderer.removeListener('share:version-added', handler)
+  },
+  onVersionDeleted: (callback: (data: { photoId: string; versionId: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any): void => callback(data)
+    ipcRenderer.on('share:version-deleted', handler)
+    return () => ipcRenderer.removeListener('share:version-deleted', handler)
+  },
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

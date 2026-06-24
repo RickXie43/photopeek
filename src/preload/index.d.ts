@@ -29,10 +29,25 @@ interface TunnelStatusEvent {
   statusText?: string
 }
 
+interface VersionAddedEvent {
+  photoId: string
+  versionId: string
+  versionName: string
+  uploadedBy: string
+  timestamp: string
+}
+
+interface VersionDeletedEvent {
+  photoId: string
+  versionId: string
+}
+
 interface ShareApi {
   onUsersUpdate: (callback: (data: UsersUpdateEvent) => void) => () => void
   onTagAction: (callback: (data: TagActionEvent) => void) => () => void
   onTunnelStatus: (callback: (data: TunnelStatusEvent) => void) => () => void
+  onVersionAdded: (callback: (data: VersionAddedEvent) => void) => () => void
+  onVersionDeleted: (callback: (data: VersionDeletedEvent) => void) => () => void
 }
 
 declare global {

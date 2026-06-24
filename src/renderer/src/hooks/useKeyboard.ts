@@ -39,65 +39,44 @@ export function useKeyboard(): void {
         return
       }
 
-      // --- Navigation ---
+      // --- Navigation (vim-style: j/k for prev/next, h/l not used here) ---
       const currentIndex = selectedPhotoIds.size === 1
         ? photos.findIndex((p) => selectedPhotoIds.has(p.id))
         : -1
 
-      if (keyboardMode === 'vim') {
-        // Skip j/k navigation when LoupeView is open (it handles j/k for version switching)
-        const loupeActive = !!document.querySelector('[data-loupe="true"]')
-        switch (e.key) {
-          case 'j':
-          case 'n':
-            if (loupeActive) return
-            e.preventDefault()
-            if (currentIndex < photos.length - 1) {
-              selectPhoto(photos[currentIndex + 1].id)
-            }
-            return
-          case 'k':
-          case 'p':
-            if (loupeActive) return
-            e.preventDefault()
-            if (currentIndex > 0) {
-              selectPhoto(photos[currentIndex - 1].id)
-            }
-            return
+      // Skip j/k navigation when LoupeView is open (it handles j/k for version switching)
+      const loupeActive = !!document.querySelector('[data-loupe="true"]')
+
+      if (e.key === 'j' || e.key === 'n') {
+        if (loupeActive) return
+        e.preventDefault()
+        if (currentIndex < photos.length - 1) {
+          selectPhoto(photos[currentIndex + 1].id)
         }
-      } else {
-        // macOS style
-        if (e.ctrlKey) {
-          switch (e.key) {
-            case 'n':
-              e.preventDefault()
-              if (currentIndex < photos.length - 1) {
-                selectPhoto(photos[currentIndex + 1].id)
-              }
-              return
-            case 'p':
-              e.preventDefault()
-              if (currentIndex > 0) {
-                selectPhoto(photos[currentIndex - 1].id)
-              }
-              return
-          }
+        return
+      }
+      if (e.key === 'k' || e.key === 'p') {
+        if (loupeActive) return
+        e.preventDefault()
+        if (currentIndex > 0) {
+          selectPhoto(photos[currentIndex - 1].id)
         }
-        // Arrow keys (common)
-        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-          e.preventDefault()
-          if (currentIndex < photos.length - 1) {
-            selectPhoto(photos[currentIndex + 1].id)
-          }
-          return
+        return
+      }
+      // Arrow keys (common)
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (currentIndex < photos.length - 1) {
+          selectPhoto(photos[currentIndex + 1].id)
         }
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-          e.preventDefault()
-          if (currentIndex > 0) {
-            selectPhoto(photos[currentIndex - 1].id)
-          }
-          return
+        return
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (currentIndex > 0) {
+          selectPhoto(photos[currentIndex - 1].id)
         }
+        return
       }
 
       // --- Rating (common) ---

@@ -3,6 +3,7 @@ import { usePhotoStore } from '../../stores/photoStore'
 import { useEventStore } from '../../stores/eventStore'
 import { useUIStore } from '../../stores/uiStore'
 import { cn } from '../../lib/cn'
+import { PhotoVersion } from '../../types/photo'
 
 export function InspectorPanel(): React.JSX.Element {
   const { photos, selectedPhotoIds, setPhotos, setLoading } = usePhotoStore()
@@ -60,21 +61,19 @@ export function InspectorPanel(): React.JSX.Element {
   }
 
   // ── Version state ──────────────────────────────────────────────────────
-  const [versionCount, setVersionCount] = useState(0)
-  const [versions, setVersions] = useState<{ id: string; versionName: string; fileName: string; fileSize: number; width: number; height: number; metadata: any }[]>([])
+  const [versions, setVersions] = useState<PhotoVersion[]>([])
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!selectedPhoto) { setVersionCount(0); setVersions([]); setSelectedVersionId(null); return }
+    if (!selectedPhoto) { setVersions([]); setSelectedVersionId(null); return }
     window.electron.ipcRenderer.invoke('photos:listVersions', selectedPhoto.id)
       .then((r: unknown) => {
-        const list = r as any[]
+        const list = r as PhotoVersion[]
         setVersions(list)
-        setVersionCount(list.length)
-        const orig = list.find((v: any) => v.isOriginal)
+        const orig = list.find((v: PhotoVersion) => v.isOriginal)
         setSelectedVersionId(orig ? orig.id : (list[0]?.id || null))
       })
-      .catch(() => { setVersionCount(0); setVersions([]) })
+      .catch(() => { setVersions([]) })
   }, [selectedPhoto?.id])
 
   // Derive display data from selected version, falling back to photo
@@ -135,23 +134,17 @@ export function InspectorPanel(): React.JSX.Element {
   }, [refreshing])
 
   useEffect(() => {
-    if (!selectedPhoto) { setVersionCount(0); setVersions([]); setSelectedVersionId(null); return }
+    if (!selectedPhoto) { setVersions([]); setSelectedVersionId(null); return }
     window.electron.ipcRenderer.invoke('photos:listVersions', selectedPhoto.id)
       .then((r: unknown) => {
-        const list = r as any[]
+        const list = r as PhotoVersion[]
         setVersions(list)
-        setVersionCount(list.length)
         // Default: select original version or first
-        const orig = list.find((v: any) => v.isOriginal)
+        const orig = list.find((v: PhotoVersion) => v.isOriginal)
         setSelectedVersionId(orig ? orig.id : (list[0]?.id || null))
       })
-      .catch(() => { setVersionCount(0); setVersions([]) })
+      .catch(() => { setVersions([]) })
   }, [selectedPhoto?.id])
-
-  // Parse versionSummary for badge display
-  const versionBadges = selectedPhoto?.versionSummary
-    ? (() => { try { return JSON.parse(selectedPhoto.versionSummary) as string[] } catch { return [] } })()
-    : []
 
   const infoItems = selectedPhoto ? [
     { label: '文件名', value: displayFileName || selectedPhoto.fileName },

@@ -8,6 +8,8 @@ import { v4 as uuid } from 'uuid'
 import { getDb } from '../db/connection'
 import { getEventDir, getLibraryPath } from './library.service'
 import { syncEventJsonPhotos } from '../ipc/event.handler'
+import { generateThumbnail, generateMedium, getRawPreviewBuffer } from './thumbnail.service'
+import { restoreCameraMetadata } from '../ipc/photo.handler'
 import Bonjour from 'bonjour-service'
 import { Tunnel, use as setCloudflaredBin } from 'cloudflared'
 
@@ -97,7 +99,32 @@ function notifyRendererUsers(session: ShareSession): void {
   }
 }
 
-/** Notify renderer about a tag action from a web user */
+/** Notify renderer about a version added by a web user */
+function notifyRendererVersionAdded(
+  photoId: string,
+  versionId: string,
+  versionName: string,
+  uploadedBy: string,
+): void {
+  const wins = BrowserWindow.getAllWindows()
+  for (const win of wins) {
+    win.webContents.send('share:version-added', {
+      photoId,
+      versionId,
+      versionName,
+      uploadedBy,
+      timestamp: new Date().toISOString(),
+    })
+  }
+}
+
+/** Notify renderer about a version deleted by a web user */
+function notifyRendererVersionDeleted(photoId: string, versionId: string): void {
+  const wins = BrowserWindow.getAllWindows()
+  for (const win of wins) {
+    win.webContents.send('share:version-deleted', { photoId, versionId })
+  }
+}
 function notifyRendererTagAction(
   eventId: string,
   userId: string,
@@ -122,8 +149,12 @@ function notifyRendererTagAction(
 
 // ─── Web App HTML ───────────────────────────────────────────────────────────
 
-function getWebAppHtml(port: number, hostname: string): string {
-  const wsUrl = `ws://${hostname}:${port}`
+function getWebAppHtml(port: number, hostname: string, useWss: boolean = false): string {
+  // When accessed through a tunnel (Cloudflare, ngrok, etc.), the WS must connect
+  // via wss:// on the same hostname — not ws://hostname:localPort.
+  const wsUrl = useWss
+    ? `wss://${hostname}`
+    : `ws://${hostname}:${port}`
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -167,6 +198,11 @@ input,button,select{font-family:inherit}
 .size-slider::-webkit-slider-thumb:hover{transform:scale(1.2)}
 .size-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);cursor:pointer}
 
+/* Sort control */
+.sort-btn{padding:3px 8px;border:1px solid var(--surface2);border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:11px;transition:all .2s}
+.sort-btn:hover{border-color:var(--accent);color:var(--accent)}
+.sort-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+
 /* Photo Grid */
 #photo-grid{padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--thumb-size,150px),1fr));gap:8px}
 .photo-card{position:relative;aspect-ratio:1;border-radius:var(--radius-sm);overflow:hidden;cursor:pointer;background:var(--surface);transition:transform .15s}
@@ -174,6 +210,9 @@ input,button,select{font-family:inherit}
 .photo-card img{width:100%;height:100%;object-fit:cover}
 .photo-card .tag-badges{position:absolute;bottom:4px;left:4px;right:4px;display:flex;flex-wrap:wrap;gap:2px;pointer-events:none}
 .photo-card .tag-badges span{font-size:9px;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.6);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70px}
+/* Version badges on thumbnails */
+.photo-card .ver-badges{position:absolute;top:4px;left:4px;display:flex;flex-wrap:wrap;gap:2px;pointer-events:none;max-width:70%}
+.photo-card .ver-badges span{font-size:9px;padding:1px 4px;border-radius:3px;font-weight:600;line-height:1.3}
 
 /* Photo Detail / Loupe */
 #photo-detail{display:none;position:fixed;inset:0;z-index:200;background:#000}
@@ -183,7 +222,7 @@ input,button,select{font-family:inherit}
 .detail-top button:hover{background:rgba(255,255,255,.15)}
 .detail-top .photo-name{font-size:13px;color:rgba(255,255,255,.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40%}
 .detail-image-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;touch-action:pan-y;min-height:0}
-.detail-image-wrap img{max-width:100%;max-height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none;transition:opacity .25s ease}
+.detail-image-wrap img{width:100%;height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none;transition:opacity .25s ease}
 .detail-image-wrap img.fade-in{opacity:0}
 .detail-image-wrap img.fade-in.loaded{opacity:1}
 .detail-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.08);color:#fff;border:none;font-size:24px;width:44px;height:44px;cursor:pointer;border-radius:50%;transition:all .25s;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);opacity:0}
@@ -219,6 +258,10 @@ input,button,select{font-family:inherit}
 .detail-actions button:active{transform:translateY(0)}
 .detail-actions button.loading{opacity:.5;pointer-events:none}
 
+/* Original image loading percentage */
+.original-progress{position:absolute;bottom:56px;left:16px;right:16px;z-index:10;display:flex;align-items:center;justify-content:flex-end;pointer-events:none}
+.original-progress-text{font-size:12px;color:rgba(255,255,255,.75);background:rgba(0,0,0,.4);padding:2px 10px;border-radius:10px;backdrop-filter:blur(6px)}
+
 /* Tag filter bar */
 .tag-filter-bar{display:flex;align-items:center;gap:6px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--surface2);overflow-x:auto;flex-shrink:0}
 .tag-filter-bar .filter-label{font-size:11px;color:var(--text2);white-space:nowrap;margin-right:4px}
@@ -248,6 +291,43 @@ input,button,select{font-family:inherit}
 .toast strong{color:var(--text)}
 @keyframes toastIn{from{opacity:0;transform:translateY(12px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
 
+/* Version Panel */
+.version-panel{background:rgba(30,30,32,.95);border-top:1px solid rgba(255,255,255,.08);flex-shrink:0;max-height:160px;overflow-y:auto}
+.version-header{display:flex;align-items:center;justify-content:space-between;padding:6px 12px}
+.version-title{font-size:11px;color:rgba(255,255,255,.5);font-weight:600}
+.version-actions{display:flex;gap:4px}
+.v-btn{padding:3px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:transparent;color:rgba(255,255,255,.8);font-size:10px;cursor:pointer;transition:all .2s;white-space:nowrap}
+.v-btn:hover{background:rgba(255,255,255,.1)}
+.v-btn.v-danger:hover{border-color:#ff453a;color:#ff453a}
+.version-row{display:flex;align-items:center;gap:6px;padding:3px 12px;font-size:11px;transition:background .15s;cursor:pointer}
+.version-row:hover{background:rgba(255,255,255,.06)}
+.version-row input[type=checkbox]{accent-color:#007AFF;cursor:pointer;width:13px;height:13px;flex-shrink:0}
+.version-row .vname{font-weight:500;color:rgba(255,255,255,.85);min-width:100px;flex-shrink:0}
+.version-row .vfile{color:rgba(255,255,255,.35);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.version-row .vmeta{color:rgba(255,255,255,.35);flex-shrink:0;margin-left:auto}
+.version-row .vtag-original{font-size:8px;background:#007AFF;color:#fff;padding:1px 5px;border-radius:3px;flex-shrink:0}
+.version-row .v-dl-btn{background:none;border:none;color:rgba(255,255,255,.4);font-size:11px;cursor:pointer;padding:2px}
+.version-row .v-dl-btn:hover{color:#fff}
+.version-row.v-disabled{opacity:.5}
+.version-row.v-disabled input[type=checkbox]{cursor:not-allowed;opacity:.4}
+
+/* Compare overlay */
+.compare-container{display:flex;height:100%;align-items:center;justify-content:center;gap:2px;padding:60px 16px 16px}
+.compare-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;height:100%}
+.compare-col img{max-width:100%;max-height:calc(100% - 28px);object-fit:contain}
+.compare-col .clabel{font-size:10px;color:rgba(255,255,255,.4);padding:4px;text-align:center}
+
+/* Slide compare */
+.slide-container{position:relative;flex:1;overflow:hidden;cursor:ew-resize;user-select:none;-webkit-user-select:none;background:var(--bg)}
+.slide-img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
+.slide-after{clip-path:inset(0 0 0 50%)}
+.slide-before{clip-path:inset(0 50% 0 0)}
+.slide-handle{position:absolute;top:0;bottom:0;width:4px;background:#fff;left:50%;transform:translateX(-50%);z-index:10;pointer-events:none;box-shadow:0 0 6px rgba(0,0,0,.5)}
+.slide-handle::after{content:'◀ ▶';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:10px;color:#fff;background:rgba(0,0,0,.5);border-radius:8px;padding:2px 5px;white-space:nowrap;letter-spacing:2px}
+.slide-label{position:absolute;bottom:8px;font-size:9px;color:rgba(255,255,255,.4);padding:2px 6px;background:rgba(0,0,0,.3);border-radius:3px;pointer-events:none;z-index:11}
+.slide-label-left{left:8px}
+.slide-label-right{right:8px}
+
 /* Responsive */
 @media(min-width:768px){#photo-grid{padding:16px;gap:12px}}
 </style>
@@ -276,7 +356,12 @@ input,button,select{font-family:inherit}
         <div class="photo-count" id="photo-count-label"></div>
       </div>
     </div>
-    <div class="size-control">
+    <div class="size-control" style="display:flex;align-items:center;gap:8px">
+      <div class="sort-control" style="display:flex;align-items:center;gap:4px;font-size:12px">
+        <span style="color:var(--text2)">排序:</span>
+        <button class="sort-btn" data-sort="created_at" style="padding:3px 8px;border:1px solid var(--surface2);border-radius:6px;background:var(--accent);color:#fff;cursor:pointer;font-size:11px;transition:all .2s">时间</button>
+        <button class="sort-btn" data-sort="file_name" style="padding:3px 8px;border:1px solid var(--surface2);border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:11px;transition:all .2s">文件名</button>
+      </div>
       <input type="range" id="thumb-size-slider" min="80" max="320" value="150" class="size-slider" />
     </div>
     <button class="leave-btn" id="leave-btn">退出</button>
@@ -316,12 +401,27 @@ input,button,select{font-family:inherit}
   <div class="detail-image-wrap" id="detail-image-wrap">
     <button class="detail-nav prev" id="detail-prev">‹</button>
     <img id="detail-image" src="" alt="" />
+    <div id="detail-compare" style="display:none;flex:1;display:none;align-items:center;justify-content:center;gap:2px;height:100%;padding:4px"></div>
     <div class="detail-counter-badge" id="detail-counter-badge"></div>
     <button class="detail-nav next" id="detail-next">›</button>
     <div class="detail-actions">
       <button id="view-original-btn">📷 原图</button>
-      <button id="save-image-btn">💾 保存</button>
     </div>
+    <!-- Original image loading progress (percentage text only) -->
+    <div id="original-progress" class="original-progress" style="display:none">
+      <span class="original-progress-text" id="original-progress-text">0%</span>
+    </div>
+  </div>
+  <!-- Version Panel -->
+  <div class="version-panel" id="version-panel" style="display:none">
+    <div class="version-header">
+      <span class="version-title">📁 版本</span>
+      <div class="version-actions">
+        <button id="upload-version-btn" class="v-btn">📥 上传修图</button>
+        <button id="delete-version-btn" class="v-btn v-danger">🗑 删除</button>
+      </div>
+    </div>
+    <div class="version-list" id="version-list"></div>
   </div>
   <div class="detail-tags-bar" id="detail-tags-bar">
     <span class="detail-tags-label">🏷️</span>
@@ -344,9 +444,11 @@ input,button,select{font-family:inherit}
   let currentPhotoIndex = -1
   let reconnectTimer = null
   let connectedUsers = []
-  let originalLoadedMap = {} // photoId -> true/false
   let shutdownFlag = false
   let activeFilterTagIds = new Set() // Set of tag IDs, empty = show all
+  let sortMode = 'created_at' // 'created_at' or 'file_name'
+  let currentVersions = [] // versions for the currently viewed photo
+  let selectedVersionIds = new Set() // multi-select version checkboxes
 
   // DOM refs
   const loginScreen = document.getElementById('login-screen')
@@ -374,9 +476,16 @@ input,button,select{font-family:inherit}
   const userNickname = document.getElementById('user-nickname')
   const photoCountLabel = document.getElementById('photo-count-label')
   const viewOriginalBtn = document.getElementById('view-original-btn')
-  const saveImageBtn = document.getElementById('save-image-btn')
+  /* saveImageBtn removed — download via version panel */
+  const originalProgress = document.getElementById('original-progress')
+  const originalProgressText = document.getElementById('original-progress-text')
   const tagFilterBar = document.getElementById('tag-filter-bar')
   const saveAllBtn = document.getElementById('save-all-btn')
+  const versionPanel = document.getElementById('version-panel')
+  const versionList = document.getElementById('version-list')
+  const uploadVersionBtn = document.getElementById('upload-version-btn')
+  const deleteVersionBtn = document.getElementById('delete-version-btn')
+  const detailCompare = document.getElementById('detail-compare')
 
   // ─── WebSocket ──────────────────────────────────────────────────────────
   function connectWs() {
@@ -421,7 +530,14 @@ input,button,select{font-family:inherit}
         // Persist active filter across syncs
         buildPhotoOrder()
         renderGrid()
-        if (currentPhotoIndex >= 0) renderDetail()
+        if (currentPhotoIndex >= 0) {
+          // Refresh versions for current photo
+          const id = photoOrder[currentPhotoIndex]
+          const photo = getPhoto(id)
+          currentVersions = (photo && photo.versions) ? photo.versions : []
+          renderVersionPanel()
+          renderDetail()
+        }
         renderTagFilterBar()
         updatePhotoCount()
         break
@@ -465,7 +581,22 @@ input,button,select{font-family:inherit}
         return true
       })
     }
-    photoOrder = ids.sort()
+    // Sort by selected mode
+    if (sortMode === 'file_name') {
+      ids.sort((a, b) => {
+        const na = (eventData.photos[a].fileName || a).toLowerCase()
+        const nb = (eventData.photos[b].fileName || b).toLowerCase()
+        return na.localeCompare(nb)
+      })
+    } else {
+      // Default: sort by createdAt (time order)
+      ids.sort((a, b) => {
+        const da = eventData.photos[a].createdAt || ''
+        const db = eventData.photos[b].createdAt || ''
+        return da.localeCompare(db)
+      })
+    }
+    photoOrder = ids
   }
 
   function getPhoto(id) { return eventData && eventData.photos ? eventData.photos[id] : null }
@@ -491,9 +622,13 @@ input,button,select{font-family:inherit}
       const badges = pTags.map(t => '<span style="background:' + (t.color || '#6366f1') + '80">' + escHtml(t.name) + '</span>').join('')
       const thumbUrl = '/thumbnail/' + id
       const hasMyTag = pTags.some(t => t && t.name === myNickname)
+      // Version badges (dedup, max 3)
+      const verNames = (photo.versions || []).map(v => v.versionName)
+      const verBadgesHtml = versionBadgeHtml(verNames)
       html += '<div class="photo-card' + (hasMyTag ? ' has-my-tag' : '') + '" data-photo-id="' + id + '">'
         + '<img src="' + thumbUrl + '" alt="' + escHtml(photo.fileName || '') + '" loading="lazy" />'
         + '<span class="dbl-hint">⚡双击标记</span>'
+        + (verBadgesHtml ? '<div class="ver-badges">' + verBadgesHtml + '</div>' : '')
         + (badges ? '<div class="tag-badges">' + badges + '</div>' : '')
         + '</div>'
     }
@@ -523,12 +658,28 @@ input,button,select{font-family:inherit}
   function openDetail(index) {
     currentPhotoIndex = index
     photoDetail.classList.add('show')
+    // Load versions for this photo
+    const id = photoOrder[index]
+    const photo = getPhoto(id)
+    currentVersions = (photo && photo.versions) ? photo.versions : []
+    selectedVersionIds = new Set()
+    if (currentVersions.length > 0) {
+      const firstSelectable = currentVersions.find(v => !isRawVersion(v))
+      if (firstSelectable) selectedVersionIds.add(firstSelectable.id)
+      else selectedVersionIds.add(currentVersions[0].id)
+    }
+    renderVersionPanel()
     renderDetail()
+    updateDetailImage()
   }
 
   function closeDetail() {
     photoDetail.classList.remove('show')
+    detailCompare.style.display = 'none'
     currentPhotoIndex = -1
+    currentVersions = []
+    selectedVersionIds = new Set()
+    originalProgress.style.display = 'none'
   }
 
   function renderDetail() {
@@ -539,30 +690,31 @@ input,button,select{font-family:inherit}
 
     detailImage.classList.remove('loaded')
     detailImage.classList.add('fade-in')
-    // Show loading state
-    viewOriginalBtn.textContent = '⏳ 加载原图...'
-    viewOriginalBtn.classList.add('loading')
-    viewOriginalBtn.disabled = true
-    // Load original photo — only when this photo is opened
-    detailImage.src = '/photo/' + id
+
+    // Determine selected version
+    const selectedVersions = currentVersions.filter(v => selectedVersionIds.has(v.id))
+    const activeVersion = selectedVersions.length === 1 ? selectedVersions[0] : null
+
+    // Track whether original has been loaded for this photo
+    let originalLoaded = false
+
+    // Load medium-quality image (version-aware if a version is selected)
+    viewOriginalBtn.textContent = '📷 加载原图'
+    viewOriginalBtn.classList.remove('loading')
+    viewOriginalBtn.disabled = false
+
+    const versionParam = activeVersion ? '?version=' + activeVersion.id : ''
+    detailImage.src = '/medium/' + id + versionParam
     detailImage.onload = () => {
       detailImage.classList.add('loaded')
-      originalLoadedMap[id] = true
-      viewOriginalBtn.classList.remove('loading')
-      viewOriginalBtn.textContent = '✅ 原图'
-      viewOriginalBtn.disabled = true
     }
     detailImage.onerror = () => {
-      // Fallback to thumbnail if original fails
-      console.warn('Failed to load original, falling back to thumbnail')
-      detailImage.src = '/thumbnail/' + id
+      console.warn('Failed to load medium, falling back to thumbnail')
+      detailImage.src = '/thumbnail/' + id + versionParam
       detailImage.onload = () => { detailImage.classList.add('loaded') }
-      originalLoadedMap[id] = false
-      viewOriginalBtn.classList.remove('loading')
-      viewOriginalBtn.textContent = '📇 缩略图'
-      viewOriginalBtn.disabled = true
     }
-    detailPhotoName.textContent = photo.fileName || ''
+
+    detailPhotoName.textContent = (activeVersion ? activeVersion.versionName + ' · ' : '') + (photo.fileName || '')
     detailCounter.textContent = (currentPhotoIndex + 1) + ' / ' + photoOrder.length
     detailCounterBadge.textContent = (currentPhotoIndex + 1) + ' / ' + photoOrder.length
 
@@ -570,7 +722,7 @@ input,button,select{font-family:inherit}
     const pTags = getPhotoTags(id)
     let tagHtml = ''
     if (pTags.length === 0) {
-      tagHtml = '<span style="color:rgba(255,255,255,.3);font-size:12px">无标签 · 空格/双击添加本人标签 · j/k 切换</span>'
+      tagHtml = '<span style="color:rgba(255,255,255,.3);font-size:12px">无标签 · 空格/双击添加本人标签</span>'
     } else {
       for (const tag of pTags) {
         if (!tag) continue
@@ -586,49 +738,400 @@ input,button,select{font-family:inherit}
       toggleNicknameTag(id)
     }
 
-    // View original button — just a status indicator (original loads automatically)
-    viewOriginalBtn.onclick = null
+    // "View Original" button — load full-resolution image
+    viewOriginalBtn.onclick = () => {
+      if (originalLoaded) return
 
-    // Save image button — always saves original
-    saveImageBtn.onclick = () => {
-      const imgSrc = '/photo/' + id
-      const fileName = photo.fileName || 'photo-' + id + '.jpg'
-      // Try download via anchor (desktop: Save As, mobile: save to gallery)
-      const link = document.createElement('a')
-      link.href = imgSrc
-      link.download = fileName
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      // Fallback for mobile browsers that ignore download attribute
-      setTimeout(() => {
-        if (!link.download) {
-          window.open(imgSrc, '_blank')
+      viewOriginalBtn.textContent = '⏳ 加载原图...'
+      viewOriginalBtn.classList.add('loading')
+      viewOriginalBtn.disabled = true
+      originalProgress.style.display = 'flex'
+      originalProgressText.textContent = '0%'
+
+      // Try XHR with progress tracking; fall back to direct <img> on any failure
+      const xhr = new XMLHttpRequest()
+      xhr.responseType = 'blob'
+
+      xhr.onprogress = (e) => {
+        if (e.lengthComputable) {
+          originalProgressText.textContent = Math.round((e.loaded / e.total) * 100) + '%'
+        } else {
+          // Content-Length unknown (e.g. tunnel), show indeterminate text
+          originalProgressText.textContent = '加载中...'
         }
-      }, 300)
-      showToast('💾 正在保存 ' + fileName)
+      }
+
+      xhr.onload = () => {
+        const blob = xhr.response
+        if (!blob || blob.size === 0) { loadDirect(); return }
+        const blobUrl = URL.createObjectURL(blob)
+        detailImage.onload = () => {
+          originalLoaded = true
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '✅ 原图'
+          viewOriginalBtn.disabled = true
+          originalProgressText.textContent = '100%'
+          setTimeout(() => { originalProgress.style.display = 'none' }, 1200)
+        }
+        detailImage.onerror = () => {
+          URL.revokeObjectURL(blobUrl)
+          loadDirect()
+        }
+        detailImage.src = blobUrl
+      }
+
+      xhr.onerror = () => loadDirect()
+      xhr.onabort = () => {}
+      xhr.timeout = 60000
+      xhr.ontimeout = () => loadDirect()
+
+      xhr.open('GET', '/photo/' + id + (activeVersion ? '?version=' + activeVersion.id : ''))
+      xhr.send()
+
+      function loadDirect() {
+        originalProgress.style.display = 'none'
+        viewOriginalBtn.textContent = '⏳ 加载中...'
+        detailImage.onload = () => {
+          originalLoaded = true
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '✅ 原图'
+          viewOriginalBtn.disabled = true
+        }
+        detailImage.onerror = () => {
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '📷 加载原图'
+          viewOriginalBtn.disabled = false
+        }
+        detailImage.src = '/photo/' + id + (activeVersion ? '?version=' + activeVersion.id : '')
+      }
     }
+
+    // Save button removed — download via version panel below
 
     // Keyboard nav
     detailPrev.onclick = () => { if (currentPhotoIndex > 0) openDetail(currentPhotoIndex - 1) }
     detailNext.onclick = () => { if (currentPhotoIndex < photoOrder.length - 1) openDetail(currentPhotoIndex + 1) }
   }
 
+  // ─── Version Panel ─────────────────────────────────────────────────
+  function isRawVersion(v) {
+    const name = (v.fileName || '').toLowerCase()
+    return name.endsWith('.cr2') || name.endsWith('.cr3') || name.endsWith('.nef') ||
+      name.endsWith('.arw') || name.endsWith('.rw2') || name.endsWith('.orf') ||
+      name.endsWith('.raf') || name.endsWith('.dng') || name.endsWith('.raw')
+  }
+
+  function renderVersionPanel() {
+    if (currentVersions.length === 0) {
+      versionPanel.style.display = 'none'
+      return
+    }
+    versionPanel.style.display = 'block'
+    let html = ''
+    for (const v of currentVersions) {
+      const isRaw = isRawVersion(v)
+      const checked = selectedVersionIds.has(v.id) ? 'checked' : ''
+      // RAW versions: checkbox disabled for preview (cannot uncheck if only RAW selected)
+      const canPreview = !isRaw
+      const disabledAttr = (!canPreview) ? 'disabled' : ''
+      const isOrig = v.isOriginal ? '<span class="vtag-original">原始</span>' : ''
+      const size = v.fileSize ? fmtSize(v.fileSize) : ''
+      const by = v.uploadedBy ? ' ' + escHtml(v.uploadedBy) : ''
+      const dlLink = '/photo/' + photoOrder[currentPhotoIndex] + '?version=' + v.id
+      const rawLabel = isRaw ? '⚠️ RAW' : ''
+      html += '<div class="version-row' + (isRaw ? ' v-disabled' : '') + '" data-vid="' + v.id + '">'
+        + '<input type="checkbox" ' + checked + ' ' + disabledAttr + ' data-vid="' + v.id + '" />'
+        + '<span class="vname">' + escHtml(abbrevVersionName(v.versionName)) + '</span>'
+        + '<span class="vfile">' + escHtml(v.fileName) + '</span>'
+        + '<span class="vmeta">' + size + by + rawLabel + '</span>'
+        + isOrig
+        + '<a href="' + dlLink + '" download class="v-dl-btn" title="下载">⬇</a>'
+        + '</div>'
+    }
+    versionList.innerHTML = html
+
+    // Checkbox change (only for non-disabled checkboxes)
+    versionList.querySelectorAll('input[type=checkbox]:not([disabled])').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const vid = cb.getAttribute('data-vid')
+        if (!vid) return
+        if (cb.checked) {
+          selectedVersionIds.add(vid)
+        } else {
+          selectedVersionIds.delete(vid)
+          // Keep at least one selectable version
+          if (selectedVersionIds.size === 0) {
+            const firstSelectable = currentVersions.find(v => !isRawVersion(v))
+            if (firstSelectable) {
+              selectedVersionIds.add(firstSelectable.id)
+            }
+          }
+          // Re-render to sync checkbox state
+        }
+        updateDetailImage()
+        renderVersionPanel()
+      })
+    })
+  }
+
+  function versionBadgeHtml(names) {
+    if (!names || names.length === 0) return ''
+    const seen = new Set()
+    let html = ''
+    let count = 0
+    for (const n of names) {
+      const abbr = abbrevVersionName(n)
+      if (seen.has(abbr)) continue
+      seen.add(abbr)
+      let bg = 'rgba(147,51,234,.8)' // default purple
+      if (['RAW','DNG'].includes(abbr)) bg = 'rgba(234,179,8,.8)'
+      else if (['JPEG','PNG','HEIC','AVIF'].includes(abbr)) bg = 'rgba(37,99,235,.8)'
+      else if (abbr === 'TIFF') bg = 'rgba(8,145,178,.8)'
+      else if (n.includes('修图') || n.includes('上传') || n.includes('手机')) bg = 'rgba(22,163,74,.8)'
+      const fg = ['RAW','DNG'].includes(abbr) ? '#000' : '#fff'
+      html += '<span style="background:' + bg + ';color:' + fg + '">' + escHtml(abbr) + '</span>'
+      count++
+      if (count >= 3) break
+    }
+    return html
+  }
+
+  function abbrevVersionName(name) {
+    if (name === 'RAW' || name === '原始RAW') return 'RAW'
+    if (name === 'DNG' || name === '原始DNG') return 'DNG'
+    if (name === 'JPEG' || name === '相机JPEG') return 'JPEG'
+    if (name === 'PNG' || name === '相机PNG') return 'PNG'
+    if (name === 'HEIC' || name === '相机HEIC') return 'HEIC'
+    if (name === 'TIFF' || name === '原始TIFF') return 'TIFF'
+    if (name === 'AVIF' || name === '相机AVIF') return 'AVIF'
+    return name.slice(0, 12)
+  }
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + 'B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
+  }
+
+  /** Update the detail image based on selected versions */
+  function updateDetailImage() {
+    const selected = currentVersions.filter(v => selectedVersionIds.has(v.id))
+    if (selected.length === 1) {
+      // Single version — show in main detail
+      detailCompare.style.display = 'none'
+      detailImage.style.display = ''
+      detailPrev.style.display = ''
+      detailNext.style.display = ''
+      detailCounterBadge.style.display = ''
+      const v = selected[0]
+      const imgSrc = '/medium/' + photoOrder[currentPhotoIndex] + '?version=' + v.id
+      detailImage.classList.remove('loaded')
+      detailImage.classList.add('fade-in')
+      detailImage.src = imgSrc
+      detailImage.onload = () => detailImage.classList.add('loaded')
+      detailImage.onerror = () => detailImage.classList.add('loaded')
+    } else if (selected.length === 2) {
+      // Exactly 2 versions — slide compare
+      detailImage.style.display = 'none'
+      detailPrev.style.display = ''
+      detailNext.style.display = ''
+      detailCounterBadge.style.display = 'none'
+      detailCompare.style.display = 'flex'
+      detailCompare.style.alignItems = 'stretch'
+      detailCompare.style.justifyContent = 'stretch'
+      detailCompare.style.padding = '0'
+      detailCompare.style.gap = '0'
+      renderSlideCompare(selected[0], selected[1])
+    } else if (selected.length >= 3) {
+      // Multiple versions — show compare grid
+      detailImage.style.display = 'none'
+      detailPrev.style.display = ''
+      detailNext.style.display = ''
+      detailCounterBadge.style.display = 'none'
+      detailCompare.style.display = 'flex'
+      renderCompareView(selected)
+    }
+  }
+
+  function renderSlideCompare(vA, vB) {
+    const id = photoOrder[currentPhotoIndex]
+    const srcA = '/medium/' + id + '?version=' + vA.id
+    const srcB = '/medium/' + id + '?version=' + vB.id
+    detailCompare.innerHTML =
+      '<div class="slide-container" id="slide-container">'
+      + '<img class="slide-img slide-before" src="' + srcA + '" alt="' + escHtml(vA.versionName) + '" />'
+      + '<img class="slide-img slide-after" src="' + srcB + '" alt="' + escHtml(vB.versionName) + '" />'
+      + '<div class="slide-handle" id="slide-handle"></div>'
+      + '<div class="slide-label slide-label-left">' + escHtml(abbrevVersionName(vA.versionName)) + '</div>'
+      + '<div class="slide-label slide-label-right">' + escHtml(abbrevVersionName(vB.versionName)) + '</div>'
+      + '</div>'
+
+    const container = document.getElementById('slide-container')
+    if (!container) return
+
+    let dragging = false
+
+    function updateSplit(pos) {
+      const pct = Math.max(0, Math.min(100, pos))
+      const before = container.querySelector('.slide-before')
+      const after = container.querySelector('.slide-after')
+      const handle = document.getElementById('slide-handle')
+      if (before) before.style.clipPath = 'inset(0 ' + (100 - pct) + '% 0 0)'
+      if (after) after.style.clipPath = 'inset(0 0 0 ' + pct + '%)'
+      if (handle) handle.style.left = pct + '%'
+    }
+
+    function onPointerMove(e) {
+      if (!dragging) return
+      const rect = container.getBoundingClientRect()
+      const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left
+      const pct = (x / rect.width) * 100
+      updateSplit(pct)
+    }
+
+    function onPointerUp() { dragging = false }
+
+    container.addEventListener('mousedown', (e) => { dragging = true; onPointerMove(e) })
+    document.addEventListener('mousemove', onPointerMove)
+    document.addEventListener('mouseup', onPointerUp)
+    container.addEventListener('touchstart', (e) => { dragging = true; onPointerMove(e) }, { passive: true })
+    document.addEventListener('touchmove', onPointerMove, { passive: true })
+    document.addEventListener('touchend', onPointerUp)
+  }
+
+  function renderCompareView(versions) {
+    const cols = Math.min(versions.length, 4)
+    let html = ''
+    for (const v of versions) {
+      const imgSrc = '/medium/' + photoOrder[currentPhotoIndex] + '?version=' + v.id
+      html += '<div class="compare-col" style="flex:' + (1 / cols * 100) + '%;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;height:100%">'
+        + '<img src="' + imgSrc + '" alt="' + escHtml(v.versionName) + '" style="max-width:100%;max-height:calc(100% - 24px);object-fit:contain" />'
+        + '<div style="font-size:10px;color:rgba(255,255,255,.4);padding:4px;text-align:center">' + escHtml(abbrevVersionName(v.versionName))
+        + (v.width ? ' · ' + v.width + '×' + v.height : '')
+        + '</div></div>'
+    }
+    detailCompare.innerHTML = html
+  }
+
+  // Upload version button
+  uploadVersionBtn.onclick = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      const photoId = photoOrder[currentPhotoIndex]
+      // Auto-generate version name: {nickname}_{number} (per-user, skip original + RAW)
+      const myVers = currentVersions.filter(v =>
+        !v.isOriginal && !isRawVersion(v) && v.uploadedBy === myNickname
+      )
+      const nextNum = myVers.length + 1
+      const versionName = myNickname + '_' + nextNum
+
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('versionName', versionName)
+
+      try {
+        const res = await fetch('/upload/' + photoId, { method: 'POST', body: formData })
+        const data = await res.json()
+        if (data.success) {
+          showToast('✅ 版本已上传')
+          // Reload event.json to get new versions
+          const r = await fetch('/event.json')
+          eventData = await r.json()
+          // Update currentVersions
+          const photo = getPhoto(photoId)
+          currentVersions = (photo && photo.versions) ? photo.versions : []
+          // Auto-select the new version
+          if (data.version) {
+            selectedVersionIds = new Set([data.version.id])
+          }
+          renderVersionPanel()
+          updateDetailImage()
+        } else {
+          showToast('❌ 上传失败: ' + (data.error || '未知错误'))
+        }
+      } catch (err) {
+        showToast('❌ 上传失败')
+      }
+    }
+    input.click()
+  }
+
+  // Delete version button
+  deleteVersionBtn.onclick = async () => {
+    const toDelete = currentVersions.filter(v => selectedVersionIds.has(v.id) && !v.isOriginal)
+    if (toDelete.length === 0) {
+      showToast('⚠️ 请选择要删除的版本（原始版本不可删除）')
+      return
+    }
+    if (!confirm('确定要删除选中的 ' + toDelete.length + ' 个版本吗？')) return
+    for (const v of toDelete) {
+      try {
+        await fetch('/delete-version/' + v.id, { method: 'POST' })
+      } catch {}
+    }
+    showToast('✅ 已删除 ' + toDelete.length + ' 个版本')
+    // Reload event.json
+    const r = await fetch('/event.json')
+    eventData = await r.json()
+    const photoId = photoOrder[currentPhotoIndex]
+    const photo = getPhoto(photoId)
+    currentVersions = (photo && photo.versions) ? photo.versions : []
+    selectedVersionIds = new Set()
+    if (currentVersions.length > 0) {
+      const orig = currentVersions.find(v => v.isOriginal)
+      selectedVersionIds.add(orig ? orig.id : currentVersions[0].id)
+    }
+    renderVersionPanel()
+    updateDetailImage()
+  }
+
   // Keyboard events for detail view
   document.addEventListener('keydown', (e) => {
     if (!photoDetail.classList.contains('show')) return
     // Prevent default scrolling for navigation keys
-    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'j', 'J', 'k', 'K', ' '].includes(e.key)) {
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'h', 'H', 'l', 'L', 'j', 'J', 'k', 'K', ' '].includes(e.key)) {
       e.preventDefault()
     }
     if (e.key === 'Escape') { closeDetail(); return }
-    // Navigate: j/↓ next, k/↑ previous, ← previous, → next
-    if (e.key === 'ArrowRight' || e.key === 'j' || e.key === 'J') {
+    // Navigate: →/l next photo, ←/h previous photo
+    if (e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L') {
       if (currentPhotoIndex < photoOrder.length - 1) openDetail(currentPhotoIndex + 1)
       return
     }
-    if (e.key === 'ArrowLeft' || e.key === 'k' || e.key === 'K') {
+    if (e.key === 'ArrowLeft' || e.key === 'h' || e.key === 'H') {
       if (currentPhotoIndex > 0) openDetail(currentPhotoIndex - 1)
+      return
+    }
+    // j/k cycle versions when exactly one version is selected
+    if (e.key === 'j' || e.key === 'J' || e.key === 'k' || e.key === 'K') {
+      const selected = currentVersions.filter(v => selectedVersionIds.has(v.id))
+      if (selected.length === 1 && currentVersions.length > 1) {
+        const curIdx = currentVersions.findIndex(v => v.id === selected[0].id)
+        if (curIdx === -1) return
+        const delta = (e.key === 'j' || e.key === 'J') ? 1 : -1
+        let nextIdx = (curIdx + delta + currentVersions.length) % currentVersions.length
+        selectedVersionIds = new Set([currentVersions[nextIdx].id])
+        renderVersionPanel()
+        updateDetailImage()
+      }
+      return
+    }
+    // ↑/↓ cycle versions when exactly one version is selected
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const selected = currentVersions.filter(v => selectedVersionIds.has(v.id))
+      if (selected.length === 1 && currentVersions.length > 1) {
+        const curIdx = currentVersions.findIndex(v => v.id === selected[0].id)
+        if (curIdx === -1) return
+        const delta = e.key === 'ArrowDown' ? 1 : -1
+        let nextIdx = (curIdx + delta + currentVersions.length) % currentVersions.length
+        selectedVersionIds = new Set([currentVersions[nextIdx].id])
+        renderVersionPanel()
+        updateDetailImage()
+      }
       return
     }
     // Space → toggle nickname tag on current photo
@@ -773,6 +1276,7 @@ input,button,select{font-family:inherit}
         renderGrid()
         renderUsersBar()
         renderTagFilterBar()
+        renderSortButtons()
         connectWs()
       })
       .catch(err => {
@@ -793,14 +1297,15 @@ input,button,select{font-family:inherit}
   saveAllBtn.addEventListener('click', () => {
     const ids = photoOrder
     if (ids.length === 0) { showToast('没有可保存的照片'); return }
-    // Trigger ZIP download — one file, one confirmation dialog
+    showToast('📦 正在打包下载 ' + ids.length + ' 张照片...')
+    // Use <a> download — the browser handles the stream natively through the tunnel,
+    // avoiding XHR blob timeout issues for large payloads.
     const link = document.createElement('a')
     link.href = '/download-zip'
     link.download = 'photopeek.zip'
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
-    showToast('📦 正在下载 ZIP 包 (' + ids.length + ' 张照片)')
   })
 
   // ─── Thumbnail Size Slider ────────────────────────────────────────────
@@ -817,6 +1322,33 @@ input,button,select{font-family:inherit}
     const val = thumbSizeSlider.value
     photoGrid.style.setProperty('--thumb-size', val + 'px')
     localStorage.setItem('photopeek-thumb-size', val)
+  })
+
+  // ─── Sort control ──────────────────────────────────────────────────────
+  function renderSortButtons() {
+    document.querySelectorAll('.sort-btn').forEach(btn => {
+      const val = btn.getAttribute('data-sort')
+      btn.classList.toggle('active', val === sortMode)
+      if (val === sortMode) {
+        btn.style.background = 'var(--accent)'
+        btn.style.borderColor = 'var(--accent)'
+        btn.style.color = '#fff'
+      } else {
+        btn.style.background = 'transparent'
+        btn.style.borderColor = 'var(--surface2)'
+        btn.style.color = 'var(--text2)'
+      }
+    })
+  }
+  document.querySelectorAll('.sort-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const val = btn.getAttribute('data-sort')
+      if (val === sortMode) return
+      sortMode = val
+      renderSortButtons()
+      buildPhotoOrder()
+      renderGrid()
+    })
   })
 
   // ─── Touch: swipe to navigate + double-tap for tag toggle ──────────────
@@ -857,13 +1389,29 @@ input,button,select{font-family:inherit}
       return
     }
 
-    // Swipe detection (only horizontal swipes)
+    // Swipe detection: horizontal → photo nav, vertical → version cycle
     if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 50) {
       e.preventDefault()
       if (diffX > 0 && currentPhotoIndex > 0) {
         openDetail(currentPhotoIndex - 1)
       } else if (diffX < 0 && currentPhotoIndex < photoOrder.length - 1) {
         openDetail(currentPhotoIndex + 1)
+      }
+    } else if (Math.abs(diffY) > Math.abs(diffX) && Math.abs(diffY) > 30) {
+      // Vertical swipe — cycle versions when single version selected
+      if (detailImage.style.display !== 'none') {
+        const selected = currentVersions.filter(v => selectedVersionIds.has(v.id))
+        if (selected.length === 1 && currentVersions.length > 1) {
+          e.preventDefault()
+          const curIdx = currentVersions.findIndex(v => v.id === selected[0].id)
+          if (curIdx !== -1) {
+            const dir = diffY < 0 ? -1 : 1 // swipe up → previous, swipe down → next
+            let nextIdx = (curIdx + dir + currentVersions.length) % currentVersions.length
+            selectedVersionIds = new Set([currentVersions[nextIdx].id])
+            renderVersionPanel()
+            updateDetailImage()
+          }
+        }
       }
     }
   }, { passive: false })
@@ -887,9 +1435,17 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
     '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
     '.json': 'application/json', '.html': 'text/html',
+    // RAW formats — most browsers can't render these, but we set correct MIME
+    '.raw': 'image/x-raw', '.cr2': 'image/x-canon-cr2', '.cr3': 'image/x-canon-cr3',
+    '.nef': 'image/x-nikon-nef', '.arw': 'image/x-sony-arw',
+    '.rw2': 'image/x-panasonic-rw2', '.orf': 'image/x-olympus-orf',
+    '.raf': 'image/x-fuji-raf', '.dng': 'image/x-adobe-dng',
+    '.tiff': 'image/tiff', '.tif': 'image/tiff',
+    '.heic': 'image/heic', '.heif': 'image/heif',
+    '.avif': 'image/avif',
   }
 
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://localhost`)
     res.setHeader('Access-Control-Allow-Origin', '*')
 
@@ -906,9 +1462,76 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       return
     }
 
-    // ── API: thumbnail ────────────────────────────────────────────────
+    // ── API: thumbnail (supports ?version=versionId) ────────────────
     if (url.pathname.startsWith('/thumbnail/')) {
       const photoId = url.pathname.slice('/thumbnail/'.length)
+      const versionId = url.searchParams.get('version')
+
+      // If version is specified, look up that version's thumbnail from DB
+      if (versionId) {
+        try {
+          const db = getDb()
+          const rows = db.exec('SELECT thumbnail_path, file_path FROM photo_versions WHERE id = ?', [versionId])
+          if (rows.length > 0 && rows[0].values.length > 0) {
+            let thumbPath = rows[0].values[0][0] as string | null
+            if (!thumbPath) {
+              // No thumbnail for this version — generate one on the fly
+              const filePath = rows[0].values[0][1] as string
+              if (filePath && fs.existsSync(filePath)) {
+                try {
+                  thumbPath = await generateThumbnail(filePath, versionId, eventId, folderName)
+                  if (thumbPath) {
+                    db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, versionId])
+                  }
+                } catch {}
+              }
+            }
+            if (thumbPath && fs.existsSync(thumbPath)) {
+              res.writeHead(200, { 'Content-Type': 'image/jpeg' })
+              res.end(fs.readFileSync(thumbPath))
+              return
+            }
+            // Fallback: serve the original file
+            const filePath = rows[0].values[0][1] as string
+            if (filePath && fs.existsSync(filePath)) {
+              const ext = path.extname(filePath).toLowerCase()
+              res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'image/jpeg' })
+              res.end(fs.readFileSync(filePath))
+              return
+            }
+          }
+        } catch {}
+      }
+
+      // Default: no version specified — look up photo's default version from DB
+      try {
+        const db = getDb()
+        // First try: find a version where thumbnail exists
+        const vRows = db.exec(`
+          SELECT v.thumbnail_path, v.file_path FROM photo_versions v
+          WHERE v.photo_id = ? AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+          ORDER BY v.is_original DESC LIMIT 1
+        `, [photoId])
+        if (vRows.length > 0 && vRows[0].values.length > 0) {
+          const thumbPath = vRows[0].values[0][0] as string | null
+          if (thumbPath && fs.existsSync(thumbPath)) {
+            res.writeHead(200, { 'Content-Type': 'image/jpeg' })
+            res.end(fs.readFileSync(thumbPath))
+            return
+          }
+          // Fallback: serve original file from version
+          const filePath = vRows[0].values[0][1] as string
+          if (filePath && fs.existsSync(filePath)) {
+            const ext = path.extname(filePath).toLowerCase()
+            const buf = fs.readFileSync(filePath)
+            res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'image/jpeg' })
+            res.end(buf)
+            return
+          }
+        }
+      } catch {}
+
+      // Final fallback: search in thumbnails directory by name
       const searchDir = path.join(getLibraryPath(), 'thumbnails')
       const found = findFile(searchDir, photoId)
       if (found) {
@@ -922,21 +1545,130 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       return
     }
 
-    // ── API: original photo ──────────────────────────────────────────
+    // ── API: medium image (resized on-the-fly, cached, supports ?version=) ─
+    if (url.pathname.startsWith('/medium/')) {
+      const photoId = url.pathname.slice('/medium/'.length)
+      const versionId = url.searchParams.get('version')
+      const cacheDir = path.join(getLibraryPath(), 'thumbnails', folderName, 'medium')
+
+      // Resolve file path: if version specified, use that; else use event.json
+      let targetPath: string | null = null
+      let cacheKey = photoId
+
+      if (versionId) {
+        cacheKey = versionId
+        // Let generateMedium/resizeWithSharp handle caching internally
+        try {
+          const db = getDb()
+          const rows = db.exec('SELECT file_path FROM photo_versions WHERE id = ?', [versionId])
+          if (rows.length > 0 && rows[0].values.length > 0) {
+            targetPath = rows[0].values[0][0] as string
+          }
+        } catch {}
+      }
+
+      if (!targetPath) {
+        const metaPath = path.join(eventDir, 'event.json')
+        if (fs.existsSync(metaPath)) {
+          try {
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+            const photoInfo = meta.photos?.[photoId]
+            if (photoInfo?.fileName) {
+              targetPath = findFileInDir(eventDir, photoInfo.fileName)
+            }
+          } catch {}
+        }
+      }
+
+      if (targetPath && fs.existsSync(targetPath)) {
+        // Generate medium via resizeWithSharp (handles its own caching internally)
+        fs.mkdirSync(cacheDir, { recursive: true })
+        try {
+          console.log('[Share] Generating medium for', photoId, 'from', targetPath)
+          const buf = await generateMedium(targetPath, cacheDir, cacheKey)
+          if (buf) {
+            console.log('[Share] Medium generated OK, size:', buf.length, 'bytes')
+            res.writeHead(200, { 'Content-Type': 'image/jpeg' })
+            res.end(buf)
+            return
+          }
+          console.warn('[Share] generateMedium returned null for', photoId, 'targetPath:', targetPath)
+        } catch (err) {
+          console.error('[Share] Medium generation failed:', err)
+        }
+      }
+      // Fallback: serve original as last resort (will be full-res but at least user sees the photo)
+      if (targetPath && fs.existsSync(targetPath)) {
+        const ext = path.extname(targetPath).toLowerCase()
+        console.warn('[Share] Medium generation returned null, serving original for', photoId)
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'image/jpeg' })
+        res.end(fs.readFileSync(targetPath))
+        return
+      }
+      res.writeHead(404)
+      res.end('')
+      return
+    }
+
+    // ── API: original photo (supports ?version=versionId) ──────────
     if (url.pathname.startsWith('/photo/')) {
       const photoId = url.pathname.slice('/photo/'.length)
+      const versionId = url.searchParams.get('version')
       const metaPath = path.join(eventDir, 'event.json')
+
+      if (versionId && fs.existsSync(metaPath)) {
+        // Look up version-specific file from photo_versions
+        try {
+          const db = getDb()
+          const vRows = db.exec('SELECT file_path, file_name FROM photo_versions WHERE id = ?', [versionId])
+          if (vRows.length > 0 && vRows[0].values.length > 0) {
+            const vFilePath = vRows[0].values[0][0] as string
+            if (vFilePath && fs.existsSync(vFilePath)) {
+              const ext = path.extname(vFilePath).toLowerCase()
+              const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
+              if (RAW_EXTS.has(ext)) {
+                const preview = await getRawPreviewBuffer(vFilePath)
+                if (preview) {
+                  res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(preview.length) })
+                  res.end(preview)
+                  return
+                }
+              }
+              const buf = fs.readFileSync(vFilePath)
+              res.writeHead(200, {
+                'Content-Type': mimeTypes[ext] || 'image/jpeg',
+                'Content-Length': String(buf.length),
+              })
+              res.end(buf)
+              return
+            }
+          }
+        } catch {}
+      }
+
       if (fs.existsSync(metaPath)) {
         try {
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
           const photoInfo = meta.photos?.[photoId]
           if (photoInfo?.fileName) {
-            // Search for the file in the event directory recursively
             const found = findFileInDir(eventDir, photoInfo.fileName)
             if (found) {
               const ext = path.extname(found).toLowerCase()
-              res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'image/jpeg' })
-              res.end(fs.readFileSync(found))
+              const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
+              if (RAW_EXTS.has(ext)) {
+                const preview = await getRawPreviewBuffer(found)
+                if (preview) {
+                  res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(preview.length) })
+                  res.end(preview)
+                  return
+                }
+              }
+              const buf = fs.readFileSync(found)
+              res.writeHead(200, {
+                'Content-Type': mimeTypes[ext] || 'image/jpeg',
+                'Content-Length': String(buf.length),
+              })
+              res.end(buf)
               return
             }
           }
@@ -956,6 +1688,190 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       return
     }
 
+    // ── API: upload edited version ───────────────────────────────────
+    if (url.pathname.startsWith('/upload/') && req.method === 'POST') {
+      const photoId = url.pathname.slice('/upload/'.length)
+      try {
+        // Read multipart body
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk)
+        const body = Buffer.concat(chunks)
+
+        // Simple multipart/form-data parser (no external deps)
+        const contentType = req.headers['content-type'] || ''
+        const boundary = contentType.match(/boundary=(.+)/)?.[1]
+        if (!boundary) { res.writeHead(400); res.end('No boundary'); return }
+
+        // Parse file and versionName from multipart
+        let fileData: Buffer | null = null
+        let fileName = 'upload.jpg'
+        let versionName = 'Web上传'
+
+        const parts = body.toString('binary').split(boundary)
+        for (const part of parts) {
+          if (part.includes('Content-Disposition')) {
+            const nameMatch = part.match(/name="([^"]+)"/)
+            const filenameMatch = part.match(/filename="([^"]+)"/)
+            const fieldName = nameMatch?.[1]
+
+            if (filenameMatch) {
+              // This is a file part
+              fileName = filenameMatch[1] || 'upload.jpg'
+              // Extract binary data after the double CRLF
+              const dataStart = part.indexOf('\r\n\r\n') + 4
+              const dataEnd = part.lastIndexOf('\r\n')
+              if (dataStart > 3 && dataEnd > dataStart) {
+                const rawData = part.slice(dataStart, dataEnd)
+                fileData = Buffer.from(rawData, 'binary')
+              }
+            } else if (fieldName === 'versionName') {
+              const valMatch = part.match(/\r\n\r\n(.+?)\r\n/)
+              if (valMatch) versionName = valMatch[1].trim()
+            }
+          }
+        }
+
+        if (!fileData) { res.writeHead(400); res.end('No file'); return }
+
+        // Look up photo info
+        const metaPath = path.join(eventDir, 'event.json')
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+        const photoInfo = meta.photos?.[photoId]
+        if (!photoInfo) { res.writeHead(404); res.end('Photo not found'); return }
+
+        // Determine destination filename
+        const originalBase = path.parse(photoInfo.fileName || 'photo').name
+        const ext = path.extname(fileName) || '.jpg'
+        let destName = `${originalBase}_${versionName}${ext}`
+        let destPath = path.join(eventDir, destName)
+
+        // Avoid overwriting existing files
+        let counter = 1
+        while (fs.existsSync(destPath)) {
+          destName = `${originalBase}_${versionName}_${counter}${ext}`
+          destPath = path.join(eventDir, destName)
+          counter++
+        }
+
+        // Write the uploaded file
+        fs.writeFileSync(destPath, fileData)
+        const stats = fs.statSync(destPath)
+
+        // Look up the original photo's event_id from photo_versions
+        const db = getDb()
+        const eventRows = db.exec('SELECT event_id FROM photos WHERE id = ?', [photoId])
+        if (eventRows.length === 0 || eventRows[0].values.length === 0) {
+          fs.unlinkSync(destPath)
+          res.writeHead(404); res.end('Photo not found in DB'); return
+        }
+        const dbEventId = eventRows[0].values[0][0] as string
+
+        // Create version in DB
+        const versionId = uuid()
+        const now = new Date().toISOString()
+        // Extract nickname from versionName (format: "nickname_number")
+        const uploadedBy = versionName.includes('_') ? versionName.split('_')[0] : null
+        db.run(
+          `INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, is_original, uploaded_by, uploaded_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+          [versionId, photoId, versionName, destPath, destName, stats.size, 0, 0, uploadedBy, now, now],
+        )
+
+        // Generate thumbnail for new version
+        try {
+          const thumbPath = await generateThumbnail(destPath, versionId, dbEventId, folderName)
+          if (thumbPath) {
+            db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, versionId])
+          }
+        } catch {}
+
+        // Pre-generate medium image for instant display
+        try {
+          const cacheDir = path.join(getLibraryPath(), 'thumbnails', folderName, 'medium')
+          await generateMedium(destPath, cacheDir, versionId)
+        } catch {}
+
+        // Restore camera metadata from original version
+        try {
+          const restoredMeta = await restoreCameraMetadata(db, photoId, destPath, null)
+          if (restoredMeta) {
+            db.run('UPDATE photo_versions SET metadata = ? WHERE id = ?', [restoredMeta, versionId])
+          }
+        } catch {}
+
+        const { persistDatabase } = await import('../db/connection')
+        persistDatabase()
+        syncEventJsonPhotos(dbEventId)
+
+        // Broadcast version-added via WebSocket
+        const session = sessions.get(eventId)
+        if (session) {
+          for (const [, user] of session.users) {
+            wsSend(user.ws, { type: 'versionAdded', data: { photoId, version: { id: versionId, versionName, fileName: destName, fileSize: stats.size, uploadedBy, createdAt: now } } })
+          }
+        }
+        // Notify desktop renderer to refresh photo list (updates version badges)
+        notifyRendererVersionAdded(photoId, versionId, versionName, uploadedBy || '')
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true, version: { id: versionId, versionName, fileName: destName } }))
+      } catch (err) {
+        console.error('[Share] Upload failed:', err)
+        res.writeHead(500)
+        res.end(JSON.stringify({ success: false, error: String(err) }))
+      }
+      return
+    }
+
+    // ── API: delete version ──────────────────────────────────────────
+    if (url.pathname.startsWith('/delete-version/') && req.method === 'POST') {
+      const versionId = url.pathname.slice('/delete-version/'.length)
+      try {
+        const db = getDb()
+        const vRows = db.exec('SELECT photo_id, file_path, thumbnail_path, is_original FROM photo_versions WHERE id = ?', [versionId])
+        if (vRows.length === 0 || vRows[0].values.length === 0) {
+          res.writeHead(404); res.end(JSON.stringify({ success: false, error: 'Version not found' })); return
+        }
+        const [vPhotoId, vFilePath, vThumbPath, vIsOriginal] = vRows[0].values[0]
+        if (vIsOriginal === 1) {
+          res.writeHead(400); res.end(JSON.stringify({ success: false, error: 'Cannot delete original version' })); return
+        }
+
+        // Delete files
+        if (vFilePath && fs.existsSync(vFilePath as string)) try { fs.unlinkSync(vFilePath as string) } catch {}
+        if (vThumbPath && fs.existsSync(vThumbPath as string)) try { fs.unlinkSync(vThumbPath as string) } catch {}
+
+        db.run('DELETE FROM photo_versions WHERE id = ?', [versionId])
+
+        // Notify via WebSocket
+        const session = sessions.get(eventId)
+        if (session) {
+          for (const [, user] of session.users) {
+            wsSend(user.ws, { type: 'versionDeleted', data: { photoId: vPhotoId, versionId } })
+          }
+        }
+        // Notify desktop renderer to refresh photo list
+        notifyRendererVersionDeleted(vPhotoId as string, versionId)
+
+        const { persistDatabase } = await import('../db/connection')
+        persistDatabase()
+        if (vPhotoId) {
+          const evRows = db.exec('SELECT event_id FROM photos WHERE id = ?', [vPhotoId as string])
+          if (evRows.length > 0 && evRows[0].values.length > 0) {
+            syncEventJsonPhotos(evRows[0].values[0][0] as string)
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true }))
+      } catch (err) {
+        console.error('[Share] Delete version failed:', err)
+        res.writeHead(500)
+        res.end(JSON.stringify({ success: false, error: String(err) }))
+      }
+      return
+    }
+
     // ── API: download ZIP of all photos ──────────────────────────────
     if (url.pathname === '/download-zip') {
       const metaPath = path.join(eventDir, 'event.json')
@@ -969,17 +1885,20 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         for (const id of photoIds) {
           const info = meta.photos[id]
           if (!info?.fileName) continue
-          const found = findFileInDir(eventDir, info.fileName)
-          if (found) {
-            files.push({ name: info.fileName, data: fs.readFileSync(found) })
+          try {
+            const found = findFileInDir(eventDir, info.fileName)
+            if (found) {
+              files.push({ name: info.fileName, data: fs.readFileSync(found) })
+            }
+          } catch (fileErr) {
+            console.error(`[Share] Skipping ${info.fileName}:`, fileErr)
           }
         }
 
-        if (files.length === 0) { res.writeHead(404); res.end(''); return }
+        if (files.length === 0) { res.writeHead(404); res.end('No files found'); return }
 
         const zipBuf = makeZip(files)
-        const folderName = path.basename(eventDir)
-        const disposition = `attachment; filename="${encodeURIComponent(folderName)}.zip"`
+        const disposition = `attachment; filename="photopeek.zip"`
         res.writeHead(200, {
           'Content-Type': 'application/zip',
           'Content-Disposition': disposition,
@@ -987,9 +1906,12 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         })
         res.end(zipBuf)
       } catch (err) {
-        console.error('[Share] ZIP error:', err)
-        res.writeHead(500)
-        res.end('')
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[Share] ZIP error:', msg)
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+          res.end('ZIP 生成失败: ' + msg)
+        }
       }
       return
     }
@@ -1006,8 +1928,11 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     // Use actual port from the listening server
     const addr = server.address()
     const actualPort = typeof addr === 'object' && addr ? addr.port : port
+    // Detect if request came through a tunnel (hostname is not a local IP)
+    const localIPs = getLocalIPs()
+    const isTunnelRequest = hostname !== 'localhost' && !localIPs.includes(hostname)
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-    res.end(getWebAppHtml(actualPort, hostname))
+    res.end(getWebAppHtml(actualPort, hostname, isTunnelRequest))
   })
 
   const wss = new WebSocketServer({ server })
@@ -1074,6 +1999,9 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
 }
 
 export function stopShare(eventId: string): void {
+  // Auto-stop tunnel if active
+  stopTunnel(eventId)
+
   const session = sessions.get(eventId)
   if (!session) return
 
@@ -1106,6 +2034,7 @@ export function getShareStatus(eventId: string): {
   ips?: string[]
   url?: string
   users?: { id: string; nickname: string; joinedAt: string }[]
+  tunnel?: { active: boolean; url?: string }
 } {
   const session = sessions.get(eventId)
   if (!session) return { active: false }
@@ -1114,13 +2043,184 @@ export function getShareStatus(eventId: string): {
     nickname: u.nickname,
     joinedAt: u.joinedAt,
   }))
+  const tunnelInfo = tunnels.get(eventId)
   return {
     active: true,
     port: session.port,
     ips: getLocalIPs(),
     url: `http://${getLocalIPs()[0] || 'localhost'}:${session.port}`,
     users: userList,
+    tunnel: tunnelInfo ? { active: true, url: tunnelInfo.url } : { active: false },
   }
+}
+
+// ─── Tunnel (Public via Cloudflare Tunnel) ─────────────────────────────────
+
+function notifyRendererTunnelStatus(
+  eventId: string,
+  extra?: { status?: string; statusText?: string },
+): void {
+  const tunnelInfo = tunnels.get(eventId)
+  const wins = BrowserWindow.getAllWindows()
+  for (const win of wins) {
+    win.webContents.send('share:tunnel-status', {
+      eventId,
+      active: !!tunnelInfo,
+      url: tunnelInfo?.url,
+      status: extra?.status || (tunnelInfo ? 'connected' : 'inactive'),
+      statusText: extra?.statusText || '',
+    })
+  }
+}
+
+const MAX_TUNNEL_RECONNECTS = 3
+
+function createTunnelInstance(eventId: string, port: number): Tunnel {
+  const tunnel = Tunnel.quick(`http://localhost:${port}`)
+
+  tunnel.on('url', (url: string) => {
+    let info = tunnels.get(eventId)
+    if (info) {
+      info.url = url
+      info.reconnectAttempts = 0
+    } else {
+      info = { tunnel, url, reconnectAttempts: 0 }
+      tunnels.set(eventId, info)
+    }
+    notifyRendererTunnelStatus(eventId, { status: 'connected', statusText: url })
+    tunnel.emit('verified' as any, url)
+    console.log(`[Share] Tunnel ${info.reconnectAttempts > 0 ? 're' : ''}connected for ${eventId}: ${url}`)
+  })
+
+  tunnel.on('error', (err: Error) => {
+    console.error(`[Share] Tunnel error for ${eventId}:`, err.message)
+  })
+
+  tunnel.on('exit', (code: number | null) => {
+    const info = tunnels.get(eventId)
+    if (!info || info.tunnel !== tunnel) return
+
+    console.log(`[Share] Tunnel exited for ${eventId} (code: ${code})`)
+
+    // Check if we should reconnect
+    if (code !== 0 && info.reconnectAttempts < MAX_TUNNEL_RECONNECTS) {
+      info.reconnectAttempts++
+      const attempt = info.reconnectAttempts
+      notifyRendererTunnelStatus(eventId, {
+        status: 'reconnecting',
+        statusText: `连接断开，正在重连 (${attempt}/${MAX_TUNNEL_RECONNECTS})...`,
+      })
+      console.log(`[Share] Tunnel reconnect attempt ${attempt}/${MAX_TUNNEL_RECONNECTS} for ${eventId}`)
+      // Clean up old tunnel and create new one
+      try { tunnel.stop() } catch {}
+      // Exponential backoff: 2s, 4s, 8s
+      const delay = 2000 * Math.pow(2, attempt - 1)
+      setTimeout(() => createTunnelInstance(eventId, port), delay)
+    } else {
+      // Give up
+      tunnels.delete(eventId)
+      if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
+      notifyRendererTunnelStatus(eventId, {
+        status: 'failed',
+        statusText: code === 0
+          ? '隧道已关闭'
+          : `连接失败（已重试 ${info.reconnectAttempts} 次）`,
+      })
+      console.log(`[Share] Tunnel gave up for ${eventId} (code: ${code})`)
+    }
+  })
+
+  return tunnel
+}
+
+function startTunnelHealthCheck(eventId: string): void {
+  const info = tunnels.get(eventId)
+  if (!info) return
+
+  // Check tunnel process health every 15 seconds
+  info.healthCheckInterval = setInterval(() => {
+    const current = tunnels.get(eventId)
+    if (!current) {
+      clearInterval(info.healthCheckInterval!)
+      return
+    }
+    const proc = current.tunnel.process
+    if (!proc || !proc.exitCode === null) {
+      // Process still running, all good
+      return
+    }
+    // Process exited, health check will trigger reconnect via 'exit' event
+  }, 15000)
+}
+
+export async function startTunnel(eventId: string): Promise<{ url: string }> {
+  // Close existing tunnel if any
+  stopTunnel(eventId)
+
+  const session = sessions.get(eventId)
+  if (!session) {
+    throw new Error('共享未启动，请先启动局域网共享')
+  }
+
+  const port = session.port
+
+  return new Promise<{ url: string }>((resolve, reject) => {
+    const tunnel = createTunnelInstance(eventId, port)
+    let settled = false
+
+    const timeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try { tunnel.stop() } catch {}
+      const info = tunnels.get(eventId)
+      if (info) {
+        if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
+        tunnels.delete(eventId)
+      }
+      notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: '连接超时，请检查网络' })
+      reject(new Error('隧道连接超时，请检查网络'))
+    }, 30000)
+
+    ;(tunnel as any).on('verified', (url: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      const info = tunnels.get(eventId)
+      if (info) startTunnelHealthCheck(eventId)
+      resolve({ url })
+    })
+
+    tunnel.on('exit', (code: number | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      const info = tunnels.get(eventId)
+      if (!info || info.reconnectAttempts === 0) {
+        notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: `连接失败 (code: ${code})` })
+        reject(new Error(`cloudflared 进程退出 (code: ${code})`))
+      }
+    })
+  })
+}
+
+export function stopTunnel(eventId: string): void {
+  const existing = tunnels.get(eventId)
+  if (!existing) return
+
+  if (existing.healthCheckInterval) {
+    clearInterval(existing.healthCheckInterval)
+  }
+  try {
+    existing.tunnel.stop()
+  } catch {}
+  tunnels.delete(eventId)
+  notifyRendererTunnelStatus(eventId, { status: 'inactive' })
+  console.log(`[Share] Tunnel stopped for ${eventId}`)
+}
+
+export function getTunnelStatus(eventId: string): { active: boolean; url?: string } {
+  const info = tunnels.get(eventId)
+  return info ? { active: true, url: info.url } : { active: false }
 }
 
 // ─── WebSocket Message Handler ─────────────────────────────────────────────
@@ -1363,166 +2463,6 @@ function findFileInDir(dir: string, fileName: string): string | null {
     }
   } catch {}
   return null
-}
-
-/** Notify renderer of tunnel status changes */
-function notifyRendererTunnelStatus(
-  eventId: string,
-  extra?: { status?: string; statusText?: string },
-): void {
-  const tunnelInfo = tunnels.get(eventId)
-  const wins = BrowserWindow.getAllWindows()
-  for (const win of wins) {
-    win.webContents.send('share:tunnel-status', {
-      eventId,
-      active: !!tunnelInfo,
-      url: tunnelInfo?.url,
-      status: extra?.status || (tunnelInfo ? 'connected' : 'inactive'),
-      statusText: extra?.statusText || '',
-    })
-  }
-}
-
-const MAX_TUNNEL_RECONNECTS = 3
-
-function createTunnelInstance(eventId: string, port: number): Tunnel {
-  const tunnel = Tunnel.quick(`http://localhost:${port}`)
-
-  tunnel.on('url', (url: string) => {
-    let info = tunnels.get(eventId)
-    if (info) {
-      info.url = url
-      info.reconnectAttempts = 0
-    } else {
-      info = { tunnel, url, reconnectAttempts: 0 }
-      tunnels.set(eventId, info)
-    }
-    notifyRendererTunnelStatus(eventId, { status: 'connected', statusText: url })
-    tunnel.emit('verified' as any, url)
-    console.log(`[Share] Tunnel ${info.reconnectAttempts > 0 ? 're' : ''}connected for ${eventId}: ${url}`)
-  })
-
-  tunnel.on('error', (err: Error) => {
-    console.error(`[Share] Tunnel error for ${eventId}:`, err.message)
-  })
-
-  tunnel.on('exit', (code: number | null) => {
-    const info = tunnels.get(eventId)
-    if (!info || info.tunnel !== tunnel) return
-
-    console.log(`[Share] Tunnel exited for ${eventId} (code: ${code})`)
-
-    if (code !== 0 && info.reconnectAttempts < MAX_TUNNEL_RECONNECTS) {
-      info.reconnectAttempts++
-      const attempt = info.reconnectAttempts
-      notifyRendererTunnelStatus(eventId, {
-        status: 'reconnecting',
-        statusText: `连接断开，正在重连(${attempt}/${MAX_TUNNEL_RECONNECTS})...`,
-      })
-      console.log(`[Share] Tunnel reconnect attempt ${attempt}/${MAX_TUNNEL_RECONNECTS} for ${eventId}`)
-      try { tunnel.stop() } catch {}
-      const delay = 2000 * Math.pow(2, attempt - 1)
-      setTimeout(() => createTunnelInstance(eventId, port), delay)
-    } else {
-      tunnels.delete(eventId)
-      if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
-      notifyRendererTunnelStatus(eventId, {
-        status: 'failed',
-        statusText: code === 0
-          ? '隧道已关闭'
-          : `连接失败（已重试 ${info.reconnectAttempts} 次）`,
-      })
-      console.log(`[Share] Tunnel gave up for ${eventId} (code: ${code})`)
-    }
-  })
-
-  return tunnel
-}
-
-function startTunnelHealthCheck(eventId: string): void {
-  const info = tunnels.get(eventId)
-  if (!info) return
-
-  info.healthCheckInterval = setInterval(() => {
-    const current = tunnels.get(eventId)
-    if (!current) {
-      clearInterval(info.healthCheckInterval!)
-      return
-    }
-    const proc = current.tunnel.process
-    if (!proc || !proc.exitCode === null) {
-      return
-    }
-  }, 15000)
-}
-
-export async function startTunnel(eventId: string): Promise<{ url: string }> {
-  stopTunnel(eventId)
-
-  const session = sessions.get(eventId)
-  if (!session) {
-    throw new Error('共享未启动，请先启动局域网共享')
-  }
-
-  const port = session.port
-
-  return new Promise<{ url: string }>((resolve, reject) => {
-    const tunnel = createTunnelInstance(eventId, port)
-    let settled = false
-
-    const timeout = setTimeout(() => {
-      if (settled) return
-      settled = true
-      try { tunnel.stop() } catch {}
-      const info = tunnels.get(eventId)
-      if (info) {
-        if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
-        tunnels.delete(eventId)
-      }
-      notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: '连接超时，请检查网络' })
-      reject(new Error('隧道连接超时，请检查网络'))
-    }, 30000)
-
-    ;(tunnel as any).on('verified', (url: string) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      const info = tunnels.get(eventId)
-      if (info) startTunnelHealthCheck(eventId)
-      resolve({ url })
-    })
-
-    tunnel.on('exit', (code: number | null) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      const info = tunnels.get(eventId)
-      if (!info || info.reconnectAttempts === 0) {
-        notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: `连接失败 (code: ${code})` })
-        reject(new Error(`cloudflared 进程退出(code: ${code})`))
-      }
-    })
-  })
-}
-
-export function stopTunnel(eventId: string): void {
-  const existing = tunnels.get(eventId)
-  if (!existing) return
-
-  if (existing.healthCheckInterval) {
-    clearInterval(existing.healthCheckInterval)
-  }
-  try {
-    existing.tunnel.stop()
-  } catch {}
-  tunnels.delete(eventId)
-  notifyRendererTunnelStatus(eventId, { status: 'inactive' })
-  console.log(`[Share] Tunnel stopped for ${eventId}`)
-}
-
-export function getTunnelStatus(eventId: string): { active: boolean; url?: string } {
-  const info = tunnels.get(eventId)
-  return info ? { active: true, url: info.url } : { active: false }
 }
 
 /** Generate a deterministic color from a nickname string */

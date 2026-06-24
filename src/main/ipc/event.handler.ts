@@ -368,4 +368,20 @@ export function registerEventHandlers(): void {
       }
     })
   })
+
+  // Returns thumbnail paths for up to 4 photos in an event (for sidebar preview)
+  ipcMain.handle('events:getThumbnails', async (_event, eventId: string): Promise<string[]> => {
+    const db = getDb()
+    try {
+      const rows = db.exec(`
+        SELECT v.thumbnail_path FROM photo_versions v
+        JOIN photos p ON p.id = v.photo_id
+        WHERE p.event_id = ? AND p.deleted_at IS NULL AND v.thumbnail_path IS NOT NULL
+        ORDER BY v.is_original DESC, v.created_at ASC
+        LIMIT 4
+      `, [eventId])
+      if (rows.length === 0 || rows[0].values.length === 0) return []
+      return rows[0].values.map((r) => r[0] as string).filter(Boolean)
+    } catch { return [] }
+  })
 }

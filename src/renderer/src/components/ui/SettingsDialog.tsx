@@ -126,10 +126,14 @@ export function SettingsDialog({
             <Trash2 size={16} className="text-gray-500" />
             <span className="text-sm font-medium text-gray-700 dark:text-gray-200">缓存管理</span>
           </div>
-          <p className="text-xs text-gray-400 mb-3">
-            清除所有缓存数据（包括数据库、缩略图和已导入的照片），应用将恢复初始状态。
-          </p>
-          <CacheClearButton />
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs text-gray-400 mb-2">
+                清除所有数据（包括数据库、缩略图、缓存和已导入的照片），应用将恢复初始状态。
+              </p>
+              <CacheClearAllButton />
+            </div>
+          </div>
         </section>
 
         <div className="h-px bg-gray-200 dark:bg-gray-700" />
@@ -141,9 +145,10 @@ export function SettingsDialog({
             <span className="text-sm font-medium text-gray-700 dark:text-gray-200">关于</span>
           </div>
           <div className="text-xs text-gray-400 space-y-0.5">
-            <div>PhotoPeek v1.0.0</div>
+            <div>PhotoPeek v2.0.0</div>
             <div>Electron + React + TypeScript</div>
           </div>
+          <UpdateChecker />
         </section>
 
         <div className="flex justify-end gap-2 pt-2">
@@ -157,14 +162,14 @@ export function SettingsDialog({
   )
 }
 
-function CacheClearButton(): React.JSX.Element {
+function CacheClearAllButton(): React.JSX.Element {
   const [clearing, setClearing] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [message, setMessage] = useState('')
 
   const handleClear = async (): Promise<void> => {
     const confirmed = window.confirm(
-      '确定要清除所有缓存吗？\n\n这将删除：\n• 所有事件和照片数据\n• 所有缩略图\n• 已导入的照片文件\n\n应用将重新初始化，此操作不可撤销！'
+      '确定要清除所有数据和设置吗？\n\n这将删除：\n• 所有事件和照片数据\n• 所有缩略图和缓存\n• 已导入的照片文件\n• 所有设置\n\n此操作不可撤销！'
     )
     if (!confirmed) return
 
@@ -179,8 +184,7 @@ function CacheClearButton(): React.JSX.Element {
 
       if (result.success) {
         setStatus('success')
-        setMessage('缓存已清除，正在重新加载...')
-        // Reload the app after a short delay
+        setMessage('已清除所有数据，正在重新加载...')
         setTimeout(() => {
           window.location.reload()
         }, 1500)
@@ -214,7 +218,7 @@ function CacheClearButton(): React.JSX.Element {
         ) : (
           <>
             <Trash2 size={14} />
-            清除所有缓存
+            清除所有数据和设置
           </>
         )}
       </Button>
@@ -223,6 +227,67 @@ function CacheClearButton(): React.JSX.Element {
       )}
       {status === 'error' && (
         <div className="text-xs text-red-500 mt-1">{message}</div>
+      )}
+    </div>
+  )
+}
+
+function UpdateChecker(): React.JSX.Element {
+  const [checking, setChecking] = useState(false)
+  const [result, setResult] = useState<{ message: string; isError: boolean } | null>(null)
+
+  const handleCheck = async (): Promise<void> => {
+    setChecking(true)
+    setResult(null)
+    try {
+      const res = (await window.electron.ipcRenderer.invoke(
+        'updates:checkLatest'
+      )) as {
+        latestVersion: string
+        downloadUrl: string
+        hasUpdate: boolean
+        error?: string
+      }
+      if (res.error) {
+        setResult({ message: `检查失败: ${res.error}`, isError: true })
+      } else if (res.hasUpdate && res.latestVersion) {
+        const confirmUpdate = window.confirm(
+          `发现新版本 ${res.latestVersion}，是否前往下载页面更新？\n\n下载后运行安装程序即可自动更新。`
+        )
+        if (confirmUpdate) {
+          await window.electron.ipcRenderer.invoke(
+            'updates:openDownloadPage',
+            res.downloadUrl || ''
+          )
+        }
+        setResult(null)
+      } else if (res.latestVersion) {
+        setResult({ message: `已是最新版本 (${res.latestVersion})`, isError: false })
+      } else {
+        setResult({ message: '无法获取版本信息', isError: true })
+      }
+    } catch (err: any) {
+      setResult({ message: `检查失败: ${err.message}`, isError: true })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={handleCheck}
+        disabled={checking}
+        className="text-xs text-[#007AFF] hover:text-[#0056CC] disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+      >
+        {checking ? '检查中...' : '检查更新'}
+      </button>
+      {result && (
+        <div
+          className={`text-xs mt-1 ${result.isError ? 'text-red-400' : 'text-green-500'}`}
+        >
+          {result.message}
+        </div>
       )}
     </div>
   )

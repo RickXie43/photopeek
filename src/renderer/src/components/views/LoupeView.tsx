@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { usePhotoStore } from '../../stores/photoStore'
-import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Tag, Layers, Download, Trash2, Upload } from 'lucide-react'
+import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Tag, Layers, Trash2, Upload } from 'lucide-react'
 import type { PhotoVersion } from '../../types/photo'
 import { cn } from '../../lib/cn'
 
@@ -17,18 +17,6 @@ function isRawFile(fileName: string): boolean {
   return ['cr2','cr3','nef','arw','rw2','orf','raf','dng','raw','srf','sr2'].includes(ext || '')
 }
 
-/** Abbreviate version name */
-function abbrevVer(name: string): string {
-  if (name === '原始RAW') return 'RAW'
-  if (name === '原始DNG') return 'DNG'
-  if (name === '相机JPEG') return 'JPG'
-  if (name === '相机PNG') return 'PNG'
-  if (name === '相机HEIC') return 'HEIC'
-  if (name === '原始TIFF') return 'TIFF'
-  if (name === '相机AVIF') return 'AVIF'
-  return name.slice(0, 6)
-}
-
 interface ComparedVersion {
   version: PhotoVersion
   url: string
@@ -39,7 +27,7 @@ export function LoupeView({
 }: {
   onClose: () => void
 }): React.JSX.Element {
-  const { photos, selectedPhotoIds, selectPhoto, removePhotos } = usePhotoStore()
+  const { photos, selectedPhotoIds, selectPhoto } = usePhotoStore()
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
@@ -325,10 +313,12 @@ export function LoupeView({
       const settings = await window.electron.ipcRenderer.invoke('settings:get') as { nickname?: string }
       if (settings?.nickname) nickname = settings.nickname
     } catch {}
-    // Count non-original, non-RAW versions for auto-numbering
-    const userVersions = versions.filter(v => !v.isOriginal && !isRawFile(v.fileName || ''))
-    const nextNum = userVersions.length + 1
-    const versionName = nickname + '_ver' + nextNum
+    // Count this user's existing non-original, non-RAW versions for auto-numbering
+    const myVersions = versions.filter(v =>
+      !v.isOriginal && !isRawFile(v.fileName || '') && v.uploadedBy === nickname
+    )
+    const nextNum = myVersions.length + 1
+    const versionName = nickname + '_' + nextNum
 
     try {
       const stats = await window.electron.ipcRenderer.invoke('fs:stat', filePath) as { size: number } | null
@@ -346,6 +336,8 @@ export function LoupeView({
       if (verResult.success) {
         const result = await window.electron.ipcRenderer.invoke('photos:listVersions', photo.id) as PhotoVersion[]
         setVersions(result)
+        // Refresh grid view to update version badges
+        window.dispatchEvent(new Event('refresh-photos'))
       } else {
         console.error('Failed to add version:', verResult.error)
       }
@@ -368,23 +360,6 @@ export function LoupeView({
     const result = await window.electron.ipcRenderer.invoke('photos:listVersions', photo.id) as PhotoVersion[]
     setVersions(result)
     window.dispatchEvent(new Event('refresh-tags'))
-  }
-
-  const handleDownload = (version: PhotoVersion): void => {
-    const link = document.createElement('a')
-    link.href = toPhotoUrl(version.filePath)
-    link.download = version.fileName
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
-
-  const handleSetDefault = async (versionId: string): Promise<void> => {
-    await window.electron.ipcRenderer.invoke('photos:setDefaultVersion', {
-      photoId: photo.id,
-      versionId,
-    })
-    window.dispatchEvent(new Event('refresh-photos'))
   }
 
   // ── Compare: build URLs for selected versions ──────────────────────────
@@ -586,7 +561,7 @@ export function LoupeView({
         <div className="flex-1 flex overflow-hidden min-h-0 relative">
           {compareMode === 'side-by-side' && (
             <div className="flex-1 flex gap-px">
-              {compareItems.map((item, i) => (
+              {compareItems.map((item) => (
                 <div key={item.version.id} className="flex-1 flex flex-col items-center justify-center overflow-hidden bg-black/20 relative">
                   <div className="absolute top-1 left-1 z-10">
                     <span className="text-[10px] text-white bg-black/60 px-1.5 py-0.5 rounded">
@@ -606,13 +581,13 @@ export function LoupeView({
             <div className="flex-1 flex flex-col items-center justify-center overflow-hidden relative">
               <img src={compareItems[toggleIndex].url} alt="" className="max-w-full max-h-full object-contain" />
               <div className="absolute bottom-4 left-4 right-4 flex items-center justify-center gap-3">
-                {compareItems.map((item, i) => (
+                {compareItems.map((item, idx) => (
                   <button
                     key={item.version.id}
-                    onClick={() => setToggleIndex(i)}
+                    onClick={() => setToggleIndex(idx)}
                     className={cn(
                       'px-3 py-1 text-[11px] rounded transition-colors',
-                      toggleIndex === i
+                      toggleIndex === idx
                         ? 'bg-[#007AFF] text-white'
                         : 'bg-black/50 text-gray-300 hover:bg-black/70'
                     )}
@@ -685,13 +660,6 @@ export function LoupeView({
               <span className="text-gray-500 truncate flex-1 min-w-0">{v.fileName}</span>
               <span className="text-gray-500 shrink-0">{fmtSize(v.fileSize)}</span>
               {v.uploadedBy && <span className="text-gray-500 shrink-0">{v.uploadedBy}</span>}
-              <button
-                onClick={() => handleDownload(v)}
-                className="p-0.5 hover:text-white transition-colors shrink-0"
-                title="下载"
-              >
-                <Download size={12} />
-              </button>
 
             </div>
           ))}

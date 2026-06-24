@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useRef } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '../../lib/cn'
 
@@ -19,15 +19,11 @@ export function Dialog({
 }: DialogProps): React.JSX.Element | null {
   const overlayRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
-    }
-    if (open) document.addEventListener('keydown', handleEsc)
-    return () => document.removeEventListener('keydown', handleEsc)
-  }, [open, onClose])
-
   if (!open) return null
+
+  const handleKeyDown = (e: React.KeyboardEvent): void => {
+    if (e.key === 'Escape') onClose()
+  }
 
   return (
     <div
@@ -36,6 +32,7 @@ export function Dialog({
       onClick={(e) => {
         if (e.target === overlayRef.current) onClose()
       }}
+      onKeyDown={handleKeyDown}
     >
       <div
         className={cn(

@@ -549,13 +549,12 @@ export function registerPhotoHandlers(): void {
         }
       }
 
-      // Detect actual dimensions if not provided
+      // Auto-detect dimensions if not provided
       let finalWidth = data.width
       let finalHeight = data.height
-      if ((!finalWidth || !finalHeight) && fs.existsSync(destPath)) {
+      if (!finalWidth || !finalHeight) {
         try {
-          const sharp = require('sharp') as any
-          const meta = await sharp(destPath).metadata() as { width?: number; height?: number }
+          const meta = await sharp(destPath).metadata()
           if (meta.width) finalWidth = meta.width
           if (meta.height) finalHeight = meta.height
         } catch {}

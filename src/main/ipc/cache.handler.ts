@@ -15,6 +15,30 @@ function rmDirRecursive(dirPath: string): void {
 }
 
 export function registerCacheHandlers(): void {
+  // Clear only thumbnails and cached images (keep database and imported photos)
+  ipcMain.handle('cache:clearThumbnails', async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      console.log('[Cache] Starting thumbnail cache clear...')
+
+      // Delete thumbnails directory (contains all thumbnail + medium + large caches)
+      const thumbnailsDir = getThumbnailsDir()
+      rmDirRecursive(thumbnailsDir)
+
+      // Reset thumbnail_path in database so thumbnails get regenerated
+      const db = await getDatabase()
+      db.run("UPDATE photos SET thumbnail_path = NULL, updated_at = datetime('now')")
+      db.run("UPDATE photo_versions SET thumbnail_path = NULL")
+
+      console.log('[Cache] Thumbnail cache cleared, thumbnail paths reset')
+      return { success: true }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[Cache] Thumbnail cache clear failed:', msg)
+      return { success: false, error: msg }
+    }
+  })
+
+  // Clear everything: database, thumbnails, imported photos — full reset
   ipcMain.handle('cache:clear', async (): Promise<{ success: boolean; error?: string }> => {
     try {
       console.log('[Cache] Starting cache clear...')

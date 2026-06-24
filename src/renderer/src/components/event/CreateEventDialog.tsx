@@ -63,6 +63,7 @@ export function CreateEventDialog({
             className="w-full px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF] focus:border-transparent"
             autoFocus
             onKeyDown={(e) => {
+              e.stopPropagation()
               if (e.key === 'Enter') handleCreate()
             }}
           />
@@ -77,6 +78,7 @@ export function CreateEventDialog({
             placeholder="添加描述..."
             rows={3}
             className="w-full px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF] focus:border-transparent resize-none"
+            onKeyDown={(e) => e.stopPropagation()}
           />
         </div>
         <div className="flex justify-end gap-2 pt-2">

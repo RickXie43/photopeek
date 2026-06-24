@@ -113,6 +113,14 @@ function App(): React.JSX.Element {
     refreshData()
   }, [refreshData, showingTrash])
 
+  // Listen for real-time version changes from shared web users → refresh photos
+  useEffect(() => {
+    if (!window.shareApi?.onVersionAdded) return
+    const unsubAdd = window.shareApi.onVersionAdded(() => { refreshData() })
+    const unsubDel = window.shareApi.onVersionDeleted(() => { refreshData() })
+    return () => { unsubAdd(); unsubDel() }
+  }, [refreshData])
+
   // Listen for real-time tag changes from shared web users → refresh photos
   useEffect(() => {
     if (!window.shareApi?.onTagAction) return
