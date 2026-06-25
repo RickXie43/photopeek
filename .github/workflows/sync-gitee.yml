@@ -1,0 +1,75 @@
+name: Sync version.json to Gitee
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up variables
+        id: vars
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Find the first -setup.exe asset
+          ASSETS='${{ toJSON(github.event.release.assets) }}'
+          ASSET_NAME=$(echo "$ASSETS" | jq -r '.[] | select(.name | endswith("-setup.exe") and (.name | endswith(".blockmap") | not)) | .name' | head -1)
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$ASSET_NAME" ]; then
+            DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/$VERSION/$ASSET_NAME"
+          else
+            DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/latest"
+          fi
+          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Get current file SHA (if exists)
+        id: gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: ${{ vars.GITEE_OWNER }}
+        run: |
+          RESPONSE=$(curl -s -X GET \
+            "https://gitee.com/api/v5/repos/${GITEE_OWNER}/photopeek/contents/version.json" \
+            -H "Authorization: token ${GITEE_TOKEN}")
+          SHA=$(echo "$RESPONSE" | jq -r '.sha // empty')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update version.json on Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: ${{ vars.GITEE_OWNER }}
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          DOWNLOAD_URL="${{ steps.vars.outputs.download_url }}"
+          SHA="${{ steps.gitee.outputs.sha }}"
+
+          # Build version.json content (base64 encoded)
+          CONTENT=$(echo "{\"latestVersion\":\"$VERSION\",\"downloadUrl\":\"$DOWNLOAD_URL\"}" | base64 -w0)
+
+          # Build API payload
+          if [ -n "$SHA" ]; then
+            # File exists - update with SHA
+            curl -s -X PUT \
+              "https://gitee.com/api/v5/repos/${GITEE_OWNER}/photopeek/contents/version.json" \
+              -H "Authorization: token ${GITEE_TOKEN}" \
+              -d "{
+                \"content\":\"$CONTENT\",
+                \"message\":\"chore: sync version to $VERSION\",
+                \"sha\":\"$SHA\",
+                \"branch\":\"master\"
+              }"
+          else
+            # File doesn't exist yet - create
+            curl -s -X POST \
+              "https://gitee.com/api/v5/repos/${GITEE_OWNER}/photopeek/contents/version.json" \
+              -H "Authorization: token ${GITEE_TOKEN}" \
+              -d "{
+                \"content\":\"$CONTENT\",
+                \"message\":\"chore: initialize version.json with $VERSION\",
+                \"branch\":\"master\"
+              }"
+          fi

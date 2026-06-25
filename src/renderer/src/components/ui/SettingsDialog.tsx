@@ -234,6 +234,7 @@ function CacheClearAllButton(): React.JSX.Element {
 
 function UpdateChecker(): React.JSX.Element {
   const [checking, setChecking] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const [result, setResult] = useState<{ message: string; isError: boolean } | null>(null)
 
   const handleCheck = async (): Promise<void> => {
@@ -252,15 +253,24 @@ function UpdateChecker(): React.JSX.Element {
         setResult({ message: `检查失败: ${res.error}`, isError: true })
       } else if (res.hasUpdate && res.latestVersion) {
         const confirmUpdate = window.confirm(
-          `发现新版本 ${res.latestVersion}，是否前往下载页面更新？\n\n下载后运行安装程序即可自动更新。`
+          `发现新版本 ${res.latestVersion}，是否立即下载并安装？`
         )
         if (confirmUpdate) {
-          await window.electron.ipcRenderer.invoke(
-            'updates:openDownloadPage',
+          setDownloading(true)
+          setResult({ message: '正在下载更新...', isError: false })
+          const result = (await window.electron.ipcRenderer.invoke(
+            'updates:downloadAndInstall',
             res.downloadUrl || ''
-          )
+          )) as { success: boolean; error?: string }
+          if (result.success) {
+            setResult({ message: '下载完成，正在安装...', isError: false })
+          } else {
+            setDownloading(false)
+            setResult({ message: `更新失败: ${result.error}`, isError: true })
+          }
+        } else {
+          setResult(null)
         }
-        setResult(null)
       } else if (res.latestVersion) {
         setResult({ message: `已是最新版本 (${res.latestVersion})`, isError: false })
       } else {
@@ -277,10 +287,10 @@ function UpdateChecker(): React.JSX.Element {
     <div className="mt-2">
       <button
         onClick={handleCheck}
-        disabled={checking}
+        disabled={checking || downloading}
         className="text-xs text-[#007AFF] hover:text-[#0056CC] disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
       >
-        {checking ? '检查中...' : '检查更新'}
+        {downloading ? '下载中...' : checking ? '检查中...' : '检查更新'}
       </button>
       {result && (
         <div
