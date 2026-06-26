@@ -1,8 +1,8 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
 import { useEventStore } from '../../stores/eventStore'
-import { Upload, FileImage, CheckCircle2, XCircle, AlertCircle, Plus, FolderOpen, File } from 'lucide-react'
+import { Upload, FileImage, CheckCircle2, XCircle, AlertCircle, Plus, FolderOpen, File, Edit3, Link2 } from 'lucide-react'
 import { cn } from '../../lib/cn'
 
 interface PreviewFile {
@@ -26,30 +26,56 @@ export function ImportDialog({
   const [previewFiles, setPreviewFiles] = useState<PreviewFile[]>([])
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
-  const [result, setResult] = useState<{ imported: number; skipped: number; errors: string[]; errorDetails?: string[]; totalError?: string } | null>(null)
+  const [result, setResult] = useState<{ imported: number; skipped: number; errors: string[]; errorDetails?: string[]; totalError?: string; merged?: number } | null>(null)
+  const [importMode, setImportMode] = useState<'original' | 'retouched'>('original')
+  const [versionName, setVersionName] = useState('')
+  const [progress, setProgress] = useState<{ current: number; total: number; message: string; percent: number } | null>(null)
+  const [cancelling, setCancelling] = useState(false)
 
   // Sync target event with sidebar selection when dialog opens
-  React.useEffect(() => {
+  useEffect(() => {
     if (open) {
       setTargetEventId(selectedEventId || '')
     }
   }, [open, selectedEventId])
 
+  // Load nickname on first switch to retouched mode
+  useEffect(() => {
+    if (importMode === 'retouched' && !versionName) {
+      window.electron.ipcRenderer.invoke('settings:get').then((config: any) => {
+        if (config?.nickname) setVersionName(config.nickname)
+      }).catch(() => {})
+    }
+  }, [importMode])
+
+  // Listen for import progress
+  useEffect(() => {
+    const handler = (...args: unknown[]) => {
+      const p = args[1] as { current: number; total: number; message: string; percent: number }
+      if (p) setProgress(p)
+    }
+    window.electron.ipcRenderer.on('import:progress', handler as (...args: unknown[]) => void)
+    return () => {
+      window.electron.ipcRenderer.removeListener('import:progress', handler as (...args: unknown[]) => void)
+    }
+  }, [])
+
   // Quick event creation
   const [showNewEventInput, setShowNewEventInput] = useState(false)
-  const [newEventName, setNewEventName] = useState('')
   const [creatingEvent, setCreatingEvent] = useState(false)
+  const newEventInputRef = useRef<HTMLInputElement>(null)
 
   const handleCreateEvent = async (): Promise<void> => {
-    if (!newEventName.trim()) return
+    const name = newEventInputRef.current?.value?.trim()
+    if (!name) return
     setCreatingEvent(true)
     try {
       const event = (await window.electron.ipcRenderer.invoke('events:create', {
-        name: newEventName.trim(),
+        name,
       })) as { id: string; name: string }
       addEvent(event as any)
       setTargetEventId(event.id)
-      setNewEventName('')
+      if (newEventInputRef.current) newEventInputRef.current.value = ''
       setShowNewEventInput(false)
     } catch (err) {
       console.error('Failed to create event:', err)
@@ -125,13 +151,18 @@ export function ImportDialog({
     if (!targetEventId || selected.length === 0) return
     setImporting(true)
     setResult(null)
+    setProgress({ current: 0, total: selected.length, message: '准备导入...', percent: 0 })
+    setCancelling(false)
 
     try {
       const res = (await window.electron.ipcRenderer.invoke('import:execute', {
         eventId: targetEventId,
         filePaths: selected,
-      })) as { imported: number; skipped: number; errors: string[]; errorDetails?: string[]; totalError?: string }
+        importMode,
+        versionName: importMode === 'retouched' ? (versionName || '修图版本') : undefined,
+      })) as { imported: number; skipped: number; errors: string[]; errorDetails?: string[]; totalError?: string; merged?: number }
       setResult(res)
+      setProgress(null)
 
       // Notify parent to refresh photos
       if (res.imported > 0) {
@@ -139,17 +170,31 @@ export function ImportDialog({
       }
     } catch (err) {
       console.error('Import failed:', err)
+      setResult({ imported: 0, skipped: 0, errors: [], totalError: err instanceof Error ? err.message : '导入失败' })
+      setProgress(null)
     } finally {
       setImporting(false)
+      setCancelling(false)
     }
   }
 
   const handleClose = (): void => {
+    if (importing && !cancelling) {
+      setCancelling(true)
+      setProgress((prev) => prev ? { ...prev, message: '正在取消...' } : null)
+      window.electron.ipcRenderer.send('import:cancel')
+      // Don't close immediately — wait for cancel to propagate
+      return
+    }
     setPreviewFiles([])
     setSelectedPaths(new Set())
     setResult(null)
+    setImporting(false)
+    setCancelling(false)
+    setProgress(null)
     setShowNewEventInput(false)
-    setNewEventName('')
+    setImportMode('original')
+    setVersionName('')
     onClose()
   }
 
@@ -157,7 +202,7 @@ export function ImportDialog({
   const selectedCount = selectedPaths.size
 
   return (
-    <Dialog open={open} onClose={handleClose} title="导入照片" className="max-w-2xl">
+    <Dialog open={open} onClose={handleClose} title="导入照片" className="max-w-2xl" closeOnOverlayClick={false}>
       <div className="space-y-4">
         {/* Target event selector with inline creation */}
         <div>
@@ -165,50 +210,106 @@ export function ImportDialog({
             导入到事件
           </label>
 
-          {showNewEventInput ? (
-            <div className="flex gap-2">
+          {/* New event input (non-controlled, CSS toggle) */}
+          <div style={{ display: showNewEventInput ? 'flex' : 'none' }} className="gap-2">
+            <input
+              type="text"
+              ref={newEventInputRef}
+              defaultValue=""
+              placeholder="输入事件名称..."
+              className="flex-1 px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') handleCreateEvent()
+                if (e.key === 'Escape') { setShowNewEventInput(false); if (newEventInputRef.current) newEventInputRef.current.value = '' }
+              }}
+            />
+            <Button variant="primary" size="sm" onClick={handleCreateEvent} disabled={creatingEvent}>
+              {creatingEvent ? '...' : '创建'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => { setShowNewEventInput(false); if (newEventInputRef.current) newEventInputRef.current.value = '' }}>
+              取消
+            </Button>
+          </div>
+
+          {/* Event selector (CSS toggle) */}
+          <div style={{ display: showNewEventInput ? 'none' : 'flex' }} className="gap-2">
+            <select
+              value={targetEventId}
+              onChange={(e) => setTargetEventId(e.target.value)}
+              className="flex-1 px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
+            >
+              <option value="">选择事件...</option>
+              {events.map((ev) => (
+                <option key={ev.id} value={ev.id}>
+                  {ev.name} ({ev.photoCount})
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => { setShowNewEventInput(true); setTimeout(() => newEventInputRef.current?.focus(), 50) }}
+              className="px-3 py-2 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg hover:border-[#007AFF] hover:text-[#007AFF] text-gray-400 transition-colors"
+              title="新建事件"
+            >
+              <Plus size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Import mode selector */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">
+            导入类型
+          </label>
+          <div className="flex gap-3">
+            <label
+              className={cn(
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors flex-1',
+                importMode === 'original'
+                  ? 'border-[#007AFF] bg-blue-50 dark:bg-blue-900/20 text-[#007AFF]'
+                  : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400'
+              )}
+            >
               <input
-                type="text"
-                value={newEventName}
-                onChange={(e) => setNewEventName(e.target.value)}
-                placeholder="输入事件名称..."
-                className="flex-1 px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateEvent()
-                  if (e.key === 'Escape') setShowNewEventInput(false)
-                }}
+                type="radio"
+                name="importMode"
+                value="original"
+                checked={importMode === 'original'}
+                onChange={() => setImportMode('original')}
+                className="accent-[#007AFF]"
               />
-              <Button variant="primary" size="sm" onClick={handleCreateEvent} disabled={!newEventName.trim() || creatingEvent}>
-                {creatingEvent ? '...' : '创建'}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => { setShowNewEventInput(false); setNewEventName('') }}>
-                取消
-              </Button>
-            </div>
-          ) : (
-            <div className="flex gap-2">
-              <select
-                value={targetEventId}
-                onChange={(e) => setTargetEventId(e.target.value)}
-                className="flex-1 px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
-              >
-                <option value="">选择事件...</option>
-                {events.map((ev) => (
-                  <option key={ev.id} value={ev.id}>
-                    {ev.name} ({ev.photoCount})
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={() => setShowNewEventInput(true)}
-                className="px-3 py-2 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg hover:border-[#007AFF] hover:text-[#007AFF] text-gray-400 transition-colors"
-                title="新建事件"
-              >
-                <Plus size={18} />
-              </button>
-            </div>
-          )}
+              <div>
+                <div className="text-sm font-medium">原图</div>
+                <div className="text-xs opacity-70">JPEG / RAW / HEIC</div>
+              </div>
+            </label>
+            <label
+              className={cn(
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors flex-1',
+                importMode === 'retouched'
+                  ? 'border-[#007AFF] bg-blue-50 dark:bg-blue-900/20 text-[#007AFF]'
+                  : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400'
+              )}
+            >
+              <input
+                type="radio"
+                name="importMode"
+                value="retouched"
+                checked={importMode === 'retouched'}
+                onChange={() => setImportMode('retouched')}
+                className="accent-[#007AFF]"
+              />
+              <div>
+                <div className="text-sm font-medium">
+                  <Edit3 size={12} className="inline mr-0.5" />
+                  修图版本
+                </div>
+                <div className="text-xs opacity-70">
+                  以「{versionName || '昵称'}」导入
+                </div>
+              </div>
+            </label>
+          </div>
         </div>
 
         {/* Drop zone / source selector */}
@@ -297,10 +398,21 @@ export function ImportDialog({
         )}
 
         {/* Import progress */}
-        {importing && (
-          <div className="py-4 text-center">
-            <div className="animate-spin w-6 h-6 border-2 border-[#007AFF] border-t-transparent rounded-full mx-auto mb-2" />
-            <div className="text-sm text-gray-500">正在导入 {selectedCount} 张照片并生成缩略图...</div>
+        {importing && progress && (
+          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+              <div className="animate-spin w-4 h-4 border-2 border-[#007AFF] border-t-transparent rounded-full" />
+              <span>{progress.message}</span>
+              <span className="ml-auto text-xs text-gray-400">
+                {progress.current}/{progress.total}
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-[#007AFF] rounded-full transition-all duration-300"
+                style={{ width: `${Math.max(progress.percent, 2)}%` }}
+              />
+            </div>
           </div>
         )}
 
@@ -316,8 +428,14 @@ export function ImportDialog({
               <>
                 <div className="flex items-center gap-2 text-green-600">
                   <CheckCircle2 size={18} />
-                  <span className="text-sm font-medium">✓ 成功导入 {result.imported} 张照片</span>
+                  <span className="text-sm font-medium">✓ 共导入 {result.imported} 张</span>
                 </div>
+                {(result.merged ?? 0) > 0 && (
+                  <div className="flex items-center gap-2 text-blue-600 ml-6">
+                    <Link2 size={14} />
+                    <span className="text-xs">其中 {result.merged} 张匹配到已有版本</span>
+                  </div>
+                )}
                 {result.skipped > 0 && (
                   <div className="flex items-center gap-2 text-yellow-600">
                     <AlertCircle size={18} />
@@ -348,17 +466,25 @@ export function ImportDialog({
 
         {/* Actions */}
         <div className="flex justify-end gap-2 pt-2">
-          <Button variant="default" onClick={handleClose}>
-            {result ? '完成' : '取消'}
-          </Button>
-          {previewFiles.length > 0 && !importing && !result && (
-            <Button
-              variant="primary"
-              onClick={handleStartImport}
-              disabled={!targetEventId || selectedCount === 0}
-            >
-              导入 {selectedCount > 0 ? `(${selectedCount} 张)` : ''}
+          {importing ? (
+            <Button variant="default" onClick={handleClose} disabled={cancelling}>
+              {cancelling ? '正在取消...' : '取消导入'}
             </Button>
+          ) : (
+            <>
+              <Button variant="default" onClick={handleClose}>
+                {result ? '完成' : '取消'}
+              </Button>
+              {previewFiles.length > 0 && !importing && !result && (
+                <Button
+                  variant="primary"
+                  onClick={handleStartImport}
+                  disabled={!targetEventId || selectedCount === 0}
+                >
+                  导入 {selectedCount > 0 ? `(${selectedCount} 张)` : ''}
+                </Button>
+              )}
+            </>
           )}
         </div>
       </div>

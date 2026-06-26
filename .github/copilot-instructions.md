@@ -1,5 +1,9 @@
 # PhotoPeek 项目指令
 
+## TypeScript 开发规范
+
+TypeScript 编码规范详见 `.github/instructions/typescript.instructions.md`（通过 `applyTo: "src/**/*.{ts,tsx}"` 自动加载）。
+
 ## 关键规则：全局键盘事件处理
 
 本应用使用 `useKeyboard` hook（`src/renderer/src/hooks/useKeyboard.ts`）在 `window` 上注册全局 `keydown` 事件监听器。

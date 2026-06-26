@@ -496,12 +496,34 @@ export function registerPhotoHandlers(): void {
       const folderName = getEventFolderName(photoRow.event_id as string)
       const eventDir = getEventDir(folderName)
 
-      // Resolve filename conflicts: if same file_name exists for this photo, auto-rename
+      // Resolve filename and version name conflicts (unified with import.handler.ts)
       let finalFileName = data.fileName
       let finalVersionName = data.versionName
       const baseName = path.parse(data.fileName).name
       const ext = path.extname(data.fileName)
       const user = data.uploadedBy || 'user'
+
+      // --- Resolve version name: query across ALL photos in the event ---
+      const eventVersionNames = queryAll(db,
+        `SELECT DISTINCT v.version_name FROM photo_versions v
+         JOIN photos p ON v.photo_id = p.id
+         WHERE p.event_id = ? AND v.uploaded_by = ?`,
+        [photoRow.event_id, user],
+      ).map(r => r.version_name as string)
+
+      const prefix = user + ' · '
+      const pattern = new RegExp('^' + user.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' · (\\d+)$')
+      let maxNum = 0
+      for (const vn of eventVersionNames) {
+        if (vn === user) maxNum = Math.max(maxNum, 1)
+        const match = vn.match(pattern)
+        if (match) maxNum = Math.max(maxNum, parseInt(match[1]!, 10))
+      }
+      finalVersionName = maxNum === 0 ? user + ' · 1' : user + ' · ' + (maxNum + 1)
+
+      // --- Resolve filename: use versionKey for dedup ---
+      const versionKey = finalVersionName.replace(/ · /g, '_')
+      finalFileName = baseName + '_' + versionKey + ext
 
       // Find all existing version filenames for this photo
       const existingFNs = queryAll(db,
@@ -511,8 +533,9 @@ export function registerPhotoHandlers(): void {
 
       if (existingFNs.includes(finalFileName)) {
         let i = 1
+        const nameNoExt = baseName + '_' + versionKey
         while (existingFNs.includes(finalFileName)) {
-          finalFileName = `${baseName}_${user}_ver${i}${ext}`
+          finalFileName = nameNoExt + '_' + i + ext
           i++
         }
       }
@@ -521,23 +544,9 @@ export function registerPhotoHandlers(): void {
       let destPath = path.join(eventDir, finalFileName)
       let diskCounter = 1
       while (fs.existsSync(destPath)) {
-        finalFileName = `${baseName}_${user}_ver${diskCounter}${ext}`
+        finalFileName = baseName + '_' + versionKey + '_' + diskCounter + ext
         destPath = path.join(eventDir, finalFileName)
         diskCounter++
-      }
-
-      // Resolve version name conflicts
-      const existingVNs = queryAll(db,
-        'SELECT version_name FROM photo_versions WHERE photo_id = ?',
-        [data.photoId],
-      ).map(r => r.version_name as string)
-
-      if (existingVNs.includes(finalVersionName)) {
-        let vn = 1
-        while (existingVNs.includes(finalVersionName)) {
-          finalVersionName = `${data.versionName}_${vn}`
-          vn++
-        }
       }
 
       // Copy or move the file

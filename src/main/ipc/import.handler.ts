@@ -7,6 +7,50 @@ import { getEventFolderName, syncEventJsonPhotos } from './event.handler'
 import { v4 as uuid } from 'uuid'
 import * as fs from 'fs'
 import * as path from 'path'
+import sharp from 'sharp'
+
+// --- dHash (差异哈希) for perceptual image matching ---
+const DHASH_THRESHOLD = 12
+
+async function computeDHash(filePath: string): Promise<string> {
+  const pixels = await sharp(filePath)
+    .rotate()
+    .resize(9, 8, { fit: 'fill' })
+    .grayscale()
+    .raw()
+    .toBuffer()
+  let hash = ''
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      hash += pixels[y * 9 + x]! < pixels[y * 9 + x + 1]! ? '1' : '0'
+    }
+  }
+  return hash
+}
+
+function hammingDistance(a: string, b: string): number {
+  let dist = 0
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) dist++
+  return dist
+}
+
+function findBestDHashMatch(
+  targetHash: string,
+  existingHashes: Map<string, string>,
+): { photoId: string; distance: number } | null {
+  let best: { photoId: string; distance: number } | null = null
+  for (const [photoId, hash] of existingHashes) {
+    const dist = hammingDistance(targetHash, hash)
+    if (dist <= DHASH_THRESHOLD && (!best || dist < best.distance)) {
+      best = { photoId, distance: dist }
+    }
+  }
+  return best
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 const IMAGE_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
@@ -65,11 +109,8 @@ function scanDirectory(dirPath: string): string[] {
   try {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true })
     for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name)
-      if (entry.isDirectory()) {
-        results.push(...scanDirectory(fullPath))
-      } else if (isImageFile(fullPath)) {
-        results.push(fullPath)
+      if (entry.isFile() && isImageFile(entry.name)) {
+        results.push(path.join(dirPath, entry.name))
       }
     }
   } catch (err) {
@@ -103,10 +144,22 @@ async function insertVersion(
   folderName: string,
 ): Promise<string> {
   const versionId = uuid()
+
+  // Compute dHash and embed it in metadata for perceptual matching
+  let finalMetadata = metadata
+  try {
+    const dHash = await computeDHash(filePath)
+    const metaObj: Record<string, unknown> = metadata ? JSON.parse(metadata) : {}
+    metaObj._dHash = dHash
+    finalMetadata = JSON.stringify(metaObj)
+  } catch (err) {
+    console.warn(`[Import] dHash computation failed for ${fileName}:`, err)
+  }
+
   db.run(
     `INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, metadata, is_original, uploaded_by, uploaded_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [versionId, photoId, versionName, filePath, fileName, fileSize, width, height, metadata, isOriginal ? 1 : 0, uploadedBy, isOriginal ? createdAt : null, createdAt],
+    [versionId, photoId, versionName, filePath, fileName, fileSize, width, height, finalMetadata, isOriginal ? 1 : 0, uploadedBy, (isOriginal || uploadedBy) ? createdAt : null, createdAt],
   )
 
   // Generate thumbnail for this version
@@ -178,14 +231,35 @@ export function registerImportHandlers(): void {
     matchKey: string
     baseName: string
     priority: number
+    dHash: string
+  }
+
+  // --- Cancellation state ---
+  let importCancelled = false
+
+  ipcMain.on('import:cancel', () => {
+    importCancelled = true
+  })
+
+  // --- Progress helper ---
+  function sendProgress(db: ReturnType<typeof getDb>, phase: string, current: number, total: number, message: string): void {
+    // Weight: metadata 25%, processing 75%
+    const percent = phase === 'metadata'
+      ? Math.round((current / Math.max(total, 1)) * 25)
+      : 25 + Math.round((current / Math.max(total, 1)) * 75)
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win) {
+      win.webContents.send('import:progress', { phase, current, total, message, percent })
+    }
   }
 
   ipcMain.handle(
     'import:execute',
-    async (_event, data: { eventId: string; filePaths: string[] }): Promise<{
+    async (_event, data: { eventId: string; filePaths: string[]; importMode?: 'original' | 'retouched'; versionName?: string }): Promise<{
       imported: number; skipped: number; errors: string[]; errorDetails?: string[]; totalError?: string
-      merged: number  // ← new: count of files merged as versions into existing photos
+      merged: number
     }> => {
+      importCancelled = false
       let db = getDb()
       const now = new Date().toISOString()
       let imported = 0
@@ -193,46 +267,116 @@ export function registerImportHandlers(): void {
       let merged = 0
       const errors: string[] = []
       const errorDetails: string[] = []
+      const copiedFiles: string[] = []
+      const createdPhotoIds: string[] = []
 
       try {
+        const isRetouched = data.importMode === 'retouched' && data.versionName
         const folderName = getEventFolderName(data.eventId)
         const eventDir = getEventDir(folderName)
         fs.mkdirSync(eventDir, { recursive: true })
 
-        // Step 1: Parse metadata and copy files
+        const totalCount = data.filePaths.length
+
+        // --- Resolve version name for retouched mode BEFORE file copy ---
+        let resolvedVersionName = data.versionName || '修图版本'
+        if (isRetouched) {
+          const existingVersions = db.exec(
+            `SELECT DISTINCT v.version_name FROM photo_versions v
+             JOIN photos p ON v.photo_id = p.id
+             WHERE p.event_id = ? AND v.uploaded_by = ?`,
+            [data.eventId, resolvedVersionName],
+          )
+          const existingNames: string[] = []
+          if (existingVersions.length > 0 && existingVersions[0].values.length > 0) {
+            for (const row of existingVersions[0].values) {
+              existingNames.push(row[0] as string)
+            }
+          }
+          const prefix = resolvedVersionName + ' · '
+          const pattern = new RegExp('^' + escapeRegex(resolvedVersionName) + ' · (\\d+)$')
+          let maxNum = 0
+          for (const vn of existingNames) {
+            if (vn === resolvedVersionName) maxNum = Math.max(maxNum, 1)
+            const match = vn.match(pattern)
+            if (match) maxNum = Math.max(maxNum, parseInt(match[1]!, 10))
+          }
+          resolvedVersionName = maxNum === 0 ? resolvedVersionName + ' · 1' : resolvedVersionName + ' · ' + (maxNum + 1)
+        }
+
+        // Step 1: Parse metadata batch with progress
+        sendProgress(db, 'metadata', 0, totalCount, '解析元数据...')
         const metadataMap = await parseMetadataBatch(data.filePaths)
+        sendProgress(db, 'metadata', totalCount, totalCount, '解析元数据完成')
+
+        if (importCancelled) {
+          return { imported: 0, skipped: 0, errors: [], merged: 0 }
+        }
+
         const fileInfos: ImportFileInfo[] = []
+        let processedCount = 0
 
         for (const srcPath of data.filePaths) {
+          if (importCancelled) {
+            for (const f of copiedFiles) { try { fs.unlinkSync(f) } catch {} }
+            for (const photoId of createdPhotoIds) {
+              db.run('DELETE FROM photo_versions WHERE photo_id = ?', [photoId])
+              db.run('DELETE FROM photos WHERE id = ?', [photoId])
+            }
+            persistDatabase()
+            return { imported, skipped, errors, merged }
+          }
+
           try {
-            const fileName = path.basename(srcPath)
-            const destPath = path.join(eventDir, fileName)
+            const origFileName = path.basename(srcPath)
+            let fileName = origFileName
             const ext = path.extname(fileName).toLowerCase()
+            const baseName = getBaseName(fileName)
+
+            // Resolve destination filename for retouched mode
+            if (isRetouched) {
+              const versionKey = resolvedVersionName.replace(/ · /g, '_')
+              fileName = baseName + '_' + versionKey + ext
+            }
+
+            let destPath = path.join(eventDir, fileName)
+
+            // Ensure unique filename on disk
+            if (fs.existsSync(destPath)) {
+              let counter = 1
+              const nameNoExt = path.basename(fileName, ext)
+              while (fs.existsSync(destPath)) {
+                fileName = nameNoExt + '_' + counter + ext
+                destPath = path.join(eventDir, fileName)
+                counter++
+              }
+            }
 
             // Check if a photo with this file_path already exists (including trashed)
-            const existingAny = db.exec('SELECT id, deleted_at FROM photos WHERE file_path = ?', [destPath])
-            if (existingAny.length > 0 && existingAny[0].values.length > 0) {
-              const row = existingAny[0].values[0]
-              const existingPhotoId = row[0] as string
-              const isDeleted = row[1] !== null
-              if (isDeleted) {
-                // Permanently delete the trashed record so we can reuse the file_path
-                db.run('DELETE FROM photo_versions WHERE photo_id = ?', [existingPhotoId])
-                db.run('DELETE FROM photos WHERE id = ?', [existingPhotoId])
-              } else {
-                // Active photo — try to add as version if not duplicate
-                const verExisting = db.exec(
-                  'SELECT id FROM photo_versions WHERE photo_id = ? AND file_name = ?',
-                  [existingPhotoId, fileName],
-                )
-                if (verExisting.length > 0 && verExisting[0].values.length > 0) {
-                  skipped++
-                  continue
+            if (!isRetouched) {
+              const existingAny = db.exec('SELECT id, deleted_at FROM photos WHERE file_path = ?', [destPath])
+              if (existingAny.length > 0 && existingAny[0].values.length > 0) {
+                const row = existingAny[0].values[0]
+                const existingPhotoId = row[0] as string
+                const isDeleted = row[1] !== null
+                if (isDeleted) {
+                  db.run('DELETE FROM photo_versions WHERE photo_id = ?', [existingPhotoId])
+                  db.run('DELETE FROM photos WHERE id = ?', [existingPhotoId])
+                } else {
+                  const verExisting = db.exec(
+                    'SELECT id FROM photo_versions WHERE photo_id = ? AND file_name = ?',
+                    [existingPhotoId, fileName],
+                  )
+                  if (verExisting.length > 0 && verExisting[0].values.length > 0) {
+                    skipped++
+                    continue
+                  }
                 }
               }
             }
 
             fs.copyFileSync(srcPath, destPath)
+            copiedFiles.push(destPath)
             const stats = fs.statSync(destPath)
             const meta = metadataMap.get(srcPath)
 
@@ -240,7 +384,14 @@ export function registerImportHandlers(): void {
               ? (typeof meta.dateTimeOriginal === 'string' ? meta.dateTimeOriginal : new Date(meta.dateTimeOriginal as Date).toISOString())
               : null
 
-            const baseName = getBaseName(fileName)
+            // Compute dHash for perceptual matching
+            let dHash = ''
+            try {
+              dHash = await computeDHash(destPath)
+            } catch {
+              // non-fatal
+            }
+
             fileInfos.push({
               srcPath,
               destPath,
@@ -252,6 +403,7 @@ export function registerImportHandlers(): void {
               matchKey: buildMatchKey(dateTimeOriginal, baseName),
               baseName,
               priority: getFilePriority(ext),
+              dHash,
             })
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err)
@@ -276,6 +428,10 @@ export function registerImportHandlers(): void {
           [data.eventId],
         )
         const existingLookup = new Map<string, { photoId: string; fileName: string; filePath: string }>()
+        const existingByBaseName = new Map<string, { photoId: string }[]>()
+        const existingDHashMap = new Map<string, string>()
+        const existingRetouchedPhotoIds = new Set<string>()
+
         if (existingPhotoRows.length > 0) {
           const { columns, values } = existingPhotoRows[0]
           for (const row of values) {
@@ -284,26 +440,72 @@ export function registerImportHandlers(): void {
             const fileName = rowObj.file_name as string
             const filePath = rowObj.file_path as string
             const metaStr = rowObj.metadata as string | null
+
+            // Build basename index
+            const bn = getBaseName(fileName)
+            if (!existingByBaseName.has(bn)) existingByBaseName.set(bn, [])
+            existingByBaseName.get(bn)!.push({ photoId })
+
+            // Check if this photo has retouched versions
+            const hasRetouched = db.exec(
+              'SELECT 1 FROM photo_versions WHERE photo_id = ? AND uploaded_by IS NOT NULL',
+              [photoId],
+            )
+            if (hasRetouched.length > 0 && hasRetouched[0].values.length > 0) {
+              existingRetouchedPhotoIds.add(photoId)
+            }
+
+            // Load dHash from metadata, or compute and backfill
             let dateTimeOriginal: string | null = null
+            let dHash = ''
             if (metaStr) {
               try {
                 const parsed = JSON.parse(metaStr)
                 dateTimeOriginal = parsed.dateTimeOriginal || null
+                dHash = parsed._dHash || ''
               } catch {}
             }
+            if (!dHash) {
+              try {
+                dHash = await computeDHash(filePath)
+                const meta = metaStr ? JSON.parse(metaStr) : {}
+                meta._dHash = dHash
+                db.run('UPDATE photos SET metadata = ? WHERE id = ?', [JSON.stringify(meta), photoId])
+              } catch {
+                // non-fatal, just skip dHash matching for this photo
+              }
+            }
+            if (dHash) {
+              existingDHashMap.set(photoId, dHash)
+            }
+
             const baseName = getBaseName(fileName)
             const key = buildMatchKey(dateTimeOriginal, baseName)
-            if (key !== '|') {  // skip files with neither dateTimeOriginal nor basename
+            if (key !== '|') {
               existingLookup.set(key, { photoId, fileName, filePath })
             }
           }
         }
 
         // Step 4: Process each file — create photo + version or add version to existing
-        // photoIdByKey tracks which photoId was created for each matchKey across this batch
         const photoIdByKey = new Map<string, string>()
+        let step4Count = 0
+        const step4Total = fileInfos.length
 
         for (const info of fileInfos) {
+          if (importCancelled) {
+            for (const f of copiedFiles) { try { fs.unlinkSync(f) } catch {} }
+            for (const photoId of createdPhotoIds) {
+              db.run('DELETE FROM photo_versions WHERE photo_id = ?', [photoId])
+              db.run('DELETE FROM photos WHERE id = ?', [photoId])
+            }
+            persistDatabase()
+            return { imported, skipped, errors, merged }
+          }
+
+          step4Count++
+          sendProgress(db, 'processing', step4Count, step4Total, '导入 ' + info.fileName + '...')
+
           try {
             const key = info.matchKey
             let targetPhotoId: string | null = null
@@ -321,18 +523,64 @@ export function registerImportHandlers(): void {
               }
             }
 
+            // --- Multi-layer fallback matching for retouched mode ---
+            if (!targetPhotoId && isRetouched) {
+              // L2: basename match
+              const bnMatches = existingByBaseName.get(info.baseName)
+              if (bnMatches && bnMatches.length > 0) {
+                targetPhotoId = bnMatches[0]!.photoId
+              }
+            }
+            if (!targetPhotoId && isRetouched) {
+              // L3: substring match (one filename contains the other)
+              for (const [bn, entries] of existingByBaseName) {
+                if (info.baseName.includes(bn) || bn.includes(info.baseName)) {
+                  targetPhotoId = entries[0]!.photoId
+                  break
+                }
+              }
+            }
+            if (!targetPhotoId && isRetouched && info.dHash) {
+              // L4: dHash perceptual match
+              const match = findBestDHashMatch(info.dHash, existingDHashMap)
+              if (match) targetPhotoId = match.photoId
+            }
+
+            // --- Reverse match for original mode: try to match against retouched photos ---
+            if (!targetPhotoId && !isRetouched && info.dHash) {
+              const match = findBestDHashMatch(info.dHash, existingDHashMap)
+              if (match) {
+                // Found a retouched version — attach original to that photo as is_original=1
+                targetPhotoId = match.photoId
+                // Demote any existing is_original
+                db.run('UPDATE photo_versions SET is_original = 0 WHERE photo_id = ? AND is_original = 1', [targetPhotoId])
+                // Update photos metadata to point to original file
+                db.run(
+                  'UPDATE photos SET file_path = ?, file_name = ?, file_size = ?, width = ?, height = ?, updated_at = ? WHERE id = ?',
+                  [info.destPath, info.fileName, info.size, (info.meta?.imageWidth as number) || 0,
+                   (info.meta?.imageHeight as number) || 0, now, targetPhotoId],
+                )
+              }
+            }
+
             if (!targetPhotoId) {
               // No match found — create new photo
               targetPhotoId = uuid()
+              createdPhotoIds.push(targetPhotoId)
               const dateOriginal = info.dateTimeOriginal || now
               const metaJson = info.meta && Object.keys(info.meta).length > 0
                 ? JSON.stringify(info.meta)
                 : null
 
-              // Determine if this file should be is_original (the highest priority in this batch group)
-              const group = batchGroupMap.get(key) || [info]
-              const bestInGroup = group.reduce((a, b) => a.priority < b.priority ? a : b)
-              const isOriginal = info.priority === bestInGroup.priority
+              // Determine if this file should be is_original
+              let isOriginal: boolean
+              if (isRetouched) {
+                isOriginal = false
+              } else {
+                const group = batchGroupMap.get(key) || [info]
+                const bestInGroup = group.reduce((a, b) => a.priority < b.priority ? a : b)
+                isOriginal = info.priority === bestInGroup.priority
+              }
 
               db.run(
                 `INSERT INTO photos (id, event_id, file_path, file_name, file_size, width, height, metadata, created_at, updated_at)
@@ -342,59 +590,79 @@ export function registerImportHandlers(): void {
                  metaJson, dateOriginal, now],
               )
 
-              const versionName = getVersionName(info.ext)
+              const versionName = isRetouched ? resolvedVersionName : getVersionName(info.ext)
+              const uploadedBy = isRetouched ? data.versionName || null : null
               await insertVersion(
                 db, targetPhotoId, versionName, info.destPath, info.fileName,
                 info.size, (info.meta?.imageWidth as number) || 0, (info.meta?.imageHeight as number) || 0,
-                metaJson, isOriginal, null, dateOriginal, data.eventId, folderName,
+                metaJson, isOriginal, uploadedBy, dateOriginal, data.eventId, folderName,
               )
 
-              // Register this key so subsequent files in same batch group find it
               if (key && key !== '|') photoIdByKey.set(key, targetPhotoId)
               imported++
 
             } else {
               // Match found — add as version to existing photo
-              const versionName = getVersionName(info.ext)
+              let versionName: string
+              let uploadedBy: string | null
+              let isOriginal: boolean
 
-              // Check if this version type or filename already exists for this photo
-              const verExisting = db.exec(
-                'SELECT id FROM photo_versions WHERE photo_id = ? AND version_name = ?',
-                [targetPhotoId, versionName],
-              )
-              const verFileExisting = db.exec(
-                'SELECT id FROM photo_versions WHERE photo_id = ? AND file_name = ?',
-                [targetPhotoId, info.fileName],
-              )
+              if (isRetouched) {
+                versionName = resolvedVersionName
+                uploadedBy = data.versionName || null
+                isOriginal = false
+              } else {
+                versionName = getVersionName(info.ext)
+                uploadedBy = null
 
-              if (verExisting.length > 0 && verExisting[0].values.length > 0) {
-                skipped++
-                continue
+                // Check priority vs current original
+                const curOrig = db.exec(
+                  'SELECT id, file_path FROM photo_versions WHERE photo_id = ? AND is_original = 1',
+                  [targetPhotoId],
+                )
+                const currentPriority = curOrig.length > 0 && curOrig[0].values.length > 0
+                  ? getFilePriority(path.extname((curOrig[0].values[0][1] as string) || ''))
+                  : 99
+                isOriginal = info.priority < currentPriority
               }
-              if (verFileExisting.length > 0 && verFileExisting[0].values.length > 0) {
-                skipped++
-                continue
+
+              // Duplicate check: for original mode, skip same version_name or file_name
+              if (!isRetouched) {
+                const verExisting = db.exec(
+                  'SELECT id FROM photo_versions WHERE photo_id = ? AND version_name = ?',
+                  [targetPhotoId, versionName],
+                )
+                const verFileExisting = db.exec(
+                  'SELECT id FROM photo_versions WHERE photo_id = ? AND file_name = ?',
+                  [targetPhotoId, info.fileName],
+                )
+                if (verExisting.length > 0 && verExisting[0].values.length > 0) {
+                  skipped++
+                  continue
+                }
+                if (verFileExisting.length > 0 && verFileExisting[0].values.length > 0) {
+                  skipped++
+                  continue
+                }
+              } else {
+                // For retouched mode, only skip if same version_name (different files ok)
+                const verExisting = db.exec(
+                  'SELECT id FROM photo_versions WHERE photo_id = ? AND version_name = ?',
+                  [targetPhotoId, versionName],
+                )
+                if (verExisting.length > 0 && verExisting[0].values.length > 0) {
+                  skipped++
+                  continue
+                }
               }
 
               const metaJson = info.meta && Object.keys(info.meta).length > 0
                 ? JSON.stringify(info.meta)
                 : null
 
-              // Check if this new file has higher priority than current is_original
-              const curOrig = db.exec(
-                'SELECT id, file_path FROM photo_versions WHERE photo_id = ? AND is_original = 1',
-                [targetPhotoId],
-              )
-              const currentPriority = curOrig.length > 0 && curOrig[0].values.length > 0
-                ? getFilePriority(path.extname((curOrig[0].values[0][1] as string) || ''))
-                : 99
-
-              const shouldUpgrade = info.priority < currentPriority
-
-              if (shouldUpgrade) {
+              if (!isRetouched && isOriginal) {
                 // Demote existing original
                 db.run('UPDATE photo_versions SET is_original = 0 WHERE photo_id = ? AND is_original = 1', [targetPhotoId])
-                // Update photos table to point to the better file
                 db.run(
                   'UPDATE photos SET file_path = ?, file_name = ?, file_size = ?, width = ?, height = ?, metadata = ?, updated_at = ? WHERE id = ?',
                   [info.destPath, info.fileName, info.size, (info.meta?.imageWidth as number) || 0,
@@ -402,11 +670,10 @@ export function registerImportHandlers(): void {
                 )
               }
 
-              const isOriginal = shouldUpgrade
               await insertVersion(
                 db, targetPhotoId, versionName, info.destPath, info.fileName,
                 info.size, (info.meta?.imageWidth as number) || 0, (info.meta?.imageHeight as number) || 0,
-                metaJson, isOriginal, null, info.dateTimeOriginal || now, data.eventId, folderName,
+                metaJson, isOriginal, uploadedBy, info.dateTimeOriginal || now, data.eventId, folderName,
               )
 
               merged++

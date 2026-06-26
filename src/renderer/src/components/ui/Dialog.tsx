@@ -8,6 +8,7 @@ interface DialogProps {
   title: string
   children: React.ReactNode
   className?: string
+  closeOnOverlayClick?: boolean
 }
 
 export function Dialog({
@@ -16,6 +17,7 @@ export function Dialog({
   title,
   children,
   className,
+  closeOnOverlayClick = true,
 }: DialogProps): React.JSX.Element | null {
   const overlayRef = useRef<HTMLDivElement>(null)
 
@@ -30,7 +32,7 @@ export function Dialog({
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={(e) => {
-        if (e.target === overlayRef.current) onClose()
+        if (closeOnOverlayClick && e.target === overlayRef.current) onClose()
       }}
       onKeyDown={handleKeyDown}
     >
