@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
 import { FolderOpen, Info, Trash2 } from 'lucide-react'
+import { confirm } from '../ui/ConfirmDialog'
 
 interface SettingsData {
   libraryPath: string
@@ -168,9 +169,13 @@ function CacheClearAllButton(): React.JSX.Element {
   const [message, setMessage] = useState('')
 
   const handleClear = async (): Promise<void> => {
-    const confirmed = window.confirm(
-      '确定要清除所有数据和设置吗？\n\n这将删除：\n• 所有事件和照片数据\n• 所有缩略图和缓存\n• 已导入的照片文件\n• 所有设置\n\n此操作不可撤销！'
-    )
+    const confirmed = await confirm({
+      title: '清除所有数据',
+      message: '确定要清除所有数据和设置吗？\n\n这将删除：\n• 所有事件和照片数据\n• 所有缩略图和缓存\n• 已导入的照片文件\n• 所有设置\n\n清除后将重启软件，此操作不可撤销！',
+      confirmText: '清除并重启',
+      cancelText: '取消',
+      variant: 'danger',
+    })
     if (!confirmed) return
 
     setClearing(true)
@@ -184,10 +189,10 @@ function CacheClearAllButton(): React.JSX.Element {
 
       if (result.success) {
         setStatus('success')
-        setMessage('已清除所有数据，正在重新加载...')
+        setMessage('已清除所有数据，正在重启...')
         setTimeout(() => {
-          window.location.reload()
-        }, 1500)
+          window.electron.ipcRenderer.invoke('app:restart')
+        }, 1000)
       } else {
         setStatus('error')
         setMessage(result.error || '清除失败，请重试')

@@ -6,6 +6,7 @@ import { GridView } from './components/views/GridView'
 import { CreateEventDialog } from './components/event/CreateEventDialog'
 import { ImportDialog } from './components/event/ImportDialog'
 import { SettingsDialog } from './components/ui/SettingsDialog'
+import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import { useEventStore } from './stores/eventStore'
 import { usePhotoStore } from './stores/photoStore'
 import { useUIStore } from './stores/uiStore'
@@ -182,6 +183,7 @@ function App(): React.JSX.Element {
         open={settingsDialogOpen}
         onClose={() => setSettingsDialogOpen(false)}
       />
+      <ConfirmDialog />
     </div>
     </ErrorBoundary>
   )

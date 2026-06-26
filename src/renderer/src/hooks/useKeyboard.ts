@@ -1,7 +1,6 @@
 import { useEffect } from 'react'
 import { useUIStore } from '../stores/uiStore'
 import { usePhotoStore } from '../stores/photoStore'
-import { useEventStore } from '../stores/eventStore'
 
 export function useKeyboard(): void {
   const { setViewMode, viewMode } =
@@ -14,7 +13,6 @@ export function useKeyboard(): void {
     updatePhoto,
     clearSelection,
   } = usePhotoStore()
-  const { selectedEventId } = useEventStore()
 
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
@@ -164,6 +162,5 @@ export function useKeyboard(): void {
     updatePhoto,
     clearSelection,
     setViewMode,
-    selectedEventId,
   ])
 }

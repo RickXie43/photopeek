@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { useEventStore } from '../../stores/eventStore'
@@ -18,15 +18,42 @@ export function CreateEventDialog({
   const { addEvent } = useEventStore()
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Ensure input gets focus when dialog opens
+  // Robust focus mechanism: retry multiple times with increasing delays
   useEffect(() => {
-    if (open) {
-      setTimeout(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      }, 100)
+    if (!open) return
+
+    let cancelled = false
+    const attempts = [0, 50, 150, 400]
+
+    const tryFocus = (): void => {
+      if (cancelled) return
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        el.select()
+      }
+    }
+
+    // First attempt in the same microtask
+    tryFocus()
+
+    // Then retry with delays to overcome any stray focus-stealing
+    const timers = attempts.map((delay) => setTimeout(tryFocus, delay))
+
+    return () => {
+      cancelled = true
+      timers.forEach(clearTimeout)
     }
   }, [open])
+
+  // Also focus when the user clicks anywhere inside the dialog
+  const handleDialogClick = useCallback((e: React.MouseEvent): void => {
+    // Only focus if the click is not on a button
+    const target = e.target as HTMLElement
+    if (target.tagName !== 'BUTTON' && !target.closest('button')) {
+      inputRef.current?.focus()
+    }
+  }, [])
 
   const handleCreate = async (): Promise<void> => {
     if (!name.trim()) return
@@ -49,7 +76,7 @@ export function CreateEventDialog({
 
   return (
     <Dialog open={open} onClose={onClose} title="新建事件">
-      <div className="space-y-4">
+      <div className="space-y-4" onClick={handleDialogClick}>
         <div>
           <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
             事件名称

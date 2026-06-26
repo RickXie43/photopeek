@@ -4,6 +4,7 @@ import { usePhotoStore } from '../../stores/photoStore'
 import { useUIStore } from '../../stores/uiStore'
 import { cn } from '../../lib/cn'
 import { Trash2, Pencil, TrashIcon, Wifi, StopCircle } from 'lucide-react'
+import { confirm } from '../ui/ConfirmDialog'
 
 export function Sidebar(): React.JSX.Element {
   const { events, selectedEventId, setSelectedEvent, removeEvent, updateEvent } = useEventStore()
@@ -79,7 +80,13 @@ export function Sidebar(): React.JSX.Element {
   }
 
   const handleDelete = async (eventId: string, eventName: string): Promise<void> => {
-    const confirmed = window.confirm(`确定要删除事件"${eventName}"吗？\n\n该事件的所有照片将被永久删除，此操作不可撤销！`)
+    const confirmed = await confirm({
+      title: '删除事件',
+      message: `确定要删除事件"${eventName}"吗？\n\n该事件的所有照片将被永久删除，此操作不可撤销！`,
+      confirmText: '删除',
+      cancelText: '取消',
+      variant: 'danger',
+    })
     if (!confirmed) return
 
     try {

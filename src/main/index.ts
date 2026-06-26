@@ -318,6 +318,12 @@ app.whenReady().then(async () => {
     return data ? Buffer.from(data).toString('base64') : null
   })
 
+  // IPC: restart the application (used after clearing all data)
+  ipcMain.handle('app:restart', () => {
+    app.relaunch()
+    app.quit()
+  })
+
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
