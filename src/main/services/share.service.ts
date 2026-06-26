@@ -738,7 +738,7 @@ input,button,select{font-family:inherit}
       toggleNicknameTag(id)
     }
 
-    // "View Original" button — load full-resolution image
+    // "View Original" button — load full-resolution with progress, then load from real URL for savability
     viewOriginalBtn.onclick = () => {
       if (originalLoaded) return
 
@@ -748,49 +748,21 @@ input,button,select{font-family:inherit}
       originalProgress.style.display = 'flex'
       originalProgressText.textContent = '0%'
 
-      // Try XHR with progress tracking; fall back to direct <img> on any failure
+      const origUrl = '/photo/' + id + (activeVersion ? '?version=' + activeVersion.id : '')
+
+      // Use XHR to track download progress, then set img src to real URL (not blob)
       const xhr = new XMLHttpRequest()
       xhr.responseType = 'blob'
 
       xhr.onprogress = (e) => {
         if (e.lengthComputable) {
           originalProgressText.textContent = Math.round((e.loaded / e.total) * 100) + '%'
-        } else {
-          // Content-Length unknown (e.g. tunnel), show indeterminate text
-          originalProgressText.textContent = '加载中...'
         }
       }
 
       xhr.onload = () => {
-        const blob = xhr.response
-        if (!blob || blob.size === 0) { loadDirect(); return }
-        const blobUrl = URL.createObjectURL(blob)
-        detailImage.onload = () => {
-          originalLoaded = true
-          viewOriginalBtn.classList.remove('loading')
-          viewOriginalBtn.textContent = '✅ 原图'
-          viewOriginalBtn.disabled = true
-          originalProgressText.textContent = '100%'
-          setTimeout(() => { originalProgress.style.display = 'none' }, 1200)
-        }
-        detailImage.onerror = () => {
-          URL.revokeObjectURL(blobUrl)
-          loadDirect()
-        }
-        detailImage.src = blobUrl
-      }
-
-      xhr.onerror = () => loadDirect()
-      xhr.onabort = () => {}
-      xhr.timeout = 60000
-      xhr.ontimeout = () => loadDirect()
-
-      xhr.open('GET', '/photo/' + id + (activeVersion ? '?version=' + activeVersion.id : ''))
-      xhr.send()
-
-      function loadDirect() {
+        // XHR done — now set img src to the real HTTP URL (browser uses cache)
         originalProgress.style.display = 'none'
-        viewOriginalBtn.textContent = '⏳ 加载中...'
         detailImage.onload = () => {
           originalLoaded = true
           viewOriginalBtn.classList.remove('loading')
@@ -802,8 +774,30 @@ input,button,select{font-family:inherit}
           viewOriginalBtn.textContent = '📷 加载原图'
           viewOriginalBtn.disabled = false
         }
-        detailImage.src = '/photo/' + id + (activeVersion ? '?version=' + activeVersion.id : '')
+        detailImage.src = origUrl
       }
+
+      xhr.onerror = () => {
+        originalProgress.style.display = 'none'
+        detailImage.onload = () => {
+          originalLoaded = true
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '✅ 原图'
+          viewOriginalBtn.disabled = true
+        }
+        detailImage.onerror = () => {
+          viewOriginalBtn.classList.remove('loading')
+          viewOriginalBtn.textContent = '📷 加载原图'
+          viewOriginalBtn.disabled = false
+        }
+        detailImage.src = origUrl
+      }
+      xhr.onabort = () => {}
+      xhr.timeout = 60000
+      xhr.ontimeout = () => { xhr.onerror(new Event('timeout')) }
+
+      xhr.open('GET', origUrl)
+      xhr.send()
     }
 
     // Save button removed — download via version panel below
@@ -1611,37 +1605,44 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     }
 
     // ── API: original photo (supports ?version=versionId) ──────────
+    // ── API: original photo (supports ?version=versionId) ──────────
     if (url.pathname.startsWith('/photo/')) {
       const photoId = url.pathname.slice('/photo/'.length)
       const versionId = url.searchParams.get('version')
       const metaPath = path.join(eventDir, 'event.json')
 
+      async function serveFile(filePath: string): Promise<boolean> {
+        const ext = path.extname(filePath).toLowerCase()
+        const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
+        if (RAW_EXTS.has(ext)) {
+          const preview = await getRawPreviewBuffer(filePath)
+          if (preview) {
+            res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(preview.length) })
+            res.end(preview)
+            return true
+          }
+          return false
+        }
+        try {
+          const buf = fs.readFileSync(filePath)
+          res.writeHead(200, {
+            'Content-Type': mimeTypes[ext] || 'image/jpeg',
+            'Content-Length': String(buf.length),
+          })
+          res.end(buf)
+          return true
+        } catch {
+          return false
+        }
+      }
+
       if (versionId && fs.existsSync(metaPath)) {
-        // Look up version-specific file from photo_versions
         try {
           const db = getDb()
           const vRows = db.exec('SELECT file_path, file_name FROM photo_versions WHERE id = ?', [versionId])
           if (vRows.length > 0 && vRows[0].values.length > 0) {
             const vFilePath = vRows[0].values[0][0] as string
-            if (vFilePath && fs.existsSync(vFilePath)) {
-              const ext = path.extname(vFilePath).toLowerCase()
-              const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
-              if (RAW_EXTS.has(ext)) {
-                const preview = await getRawPreviewBuffer(vFilePath)
-                if (preview) {
-                  res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(preview.length) })
-                  res.end(preview)
-                  return
-                }
-              }
-              const buf = fs.readFileSync(vFilePath)
-              res.writeHead(200, {
-                'Content-Type': mimeTypes[ext] || 'image/jpeg',
-                'Content-Length': String(buf.length),
-              })
-              res.end(buf)
-              return
-            }
+            if (vFilePath && fs.existsSync(vFilePath) && await serveFile(vFilePath)) return
           }
         } catch {}
       }
@@ -1652,25 +1653,7 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
           const photoInfo = meta.photos?.[photoId]
           if (photoInfo?.fileName) {
             const found = findFileInDir(eventDir, photoInfo.fileName)
-            if (found) {
-              const ext = path.extname(found).toLowerCase()
-              const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
-              if (RAW_EXTS.has(ext)) {
-                const preview = await getRawPreviewBuffer(found)
-                if (preview) {
-                  res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(preview.length) })
-                  res.end(preview)
-                  return
-                }
-              }
-              const buf = fs.readFileSync(found)
-              res.writeHead(200, {
-                'Content-Type': mimeTypes[ext] || 'image/jpeg',
-                'Content-Length': String(buf.length),
-              })
-              res.end(buf)
-              return
-            }
+            if (found && await serveFile(found)) return
           }
         } catch {}
       }
