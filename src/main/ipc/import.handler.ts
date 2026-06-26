@@ -242,7 +242,7 @@ export function registerImportHandlers(): void {
   })
 
   // --- Progress helper ---
-  function sendProgress(db: ReturnType<typeof getDb>, phase: string, current: number, total: number, message: string): void {
+  function sendProgress(_db: ReturnType<typeof getDb>, phase: string, current: number, total: number, message: string): void {
     // Weight: metadata 25%, processing 75%
     const percent = phase === 'metadata'
       ? Math.round((current / Math.max(total, 1)) * 25)
@@ -293,7 +293,6 @@ export function registerImportHandlers(): void {
               existingNames.push(row[0] as string)
             }
           }
-          const prefix = resolvedVersionName + ' · '
           const pattern = new RegExp('^' + escapeRegex(resolvedVersionName) + ' · (\\d+)$')
           let maxNum = 0
           for (const vn of existingNames) {
@@ -314,7 +313,6 @@ export function registerImportHandlers(): void {
         }
 
         const fileInfos: ImportFileInfo[] = []
-        let processedCount = 0
 
         for (const srcPath of data.filePaths) {
           if (importCancelled) {

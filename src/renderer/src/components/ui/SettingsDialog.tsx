@@ -146,7 +146,7 @@ export function SettingsDialog({
             <span className="text-sm font-medium text-gray-700 dark:text-gray-200">关于</span>
           </div>
           <div className="text-xs text-gray-400 space-y-0.5">
-            <div>PhotoPeek v2.0.0</div>
+            <div>PhotoPeek v2.0.1</div>
             <div>Electron + React + TypeScript</div>
           </div>
           <UpdateChecker />

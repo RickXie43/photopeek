@@ -1,6 +1,6 @@
 # PhotoPeek 📸
 
-> `v2.0.0` — [GitHub](https://github.com/Rick/PhotoPeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
+> `v2.0.1` — [GitHub](https://github.com/Rick/PhotoPeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
 
 ## 功能特性
 

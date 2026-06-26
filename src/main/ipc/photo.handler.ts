@@ -511,7 +511,6 @@ export function registerPhotoHandlers(): void {
         [photoRow.event_id, user],
       ).map(r => r.version_name as string)
 
-      const prefix = user + ' · '
       const pattern = new RegExp('^' + user.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' · (\\d+)$')
       let maxNum = 0
       for (const vn of eventVersionNames) {
