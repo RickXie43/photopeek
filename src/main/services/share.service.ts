@@ -211,8 +211,9 @@ input,button,select{font-family:inherit}
 .photo-card .tag-badges{position:absolute;bottom:4px;left:4px;right:4px;display:flex;flex-wrap:wrap;gap:2px;pointer-events:none}
 .photo-card .tag-badges span{font-size:9px;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.6);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70px}
 /* Version badges on thumbnails */
-.photo-card .ver-badges{position:absolute;top:4px;left:4px;display:flex;flex-wrap:wrap;gap:2px;pointer-events:none;max-width:70%}
-.photo-card .ver-badges span{font-size:9px;padding:1px 4px;border-radius:3px;font-weight:600;line-height:1.3}
+.photo-card .ver-badges{position:absolute;top:4px;left:4px;right:4px;display:flex;flex-direction:column;gap:2px;pointer-events:none}
+.photo-card .ver-badges .ver-row{display:flex;flex-wrap:wrap;gap:2px}
+.photo-card .ver-badges span{font-size:9px;padding:1px 4px;border-radius:3px;font-weight:600;line-height:1.3;white-space:nowrap}
 
 /* Photo Detail / Loupe */
 #photo-detail{display:none;position:fixed;inset:0;z-index:200;background:#000}
@@ -378,6 +379,11 @@ input,button,select{font-family:inherit}
     <span class="filter-label">🏷️ 筛选:</span>
   </div>
 
+  <!-- Version Filter Bar -->
+  <div class="tag-filter-bar" id="version-filter-bar" style="display:none">
+    <span class="filter-label">📁 版本:</span>
+  </div>
+
   <!-- Photo Grid -->
   <div id="photo-grid"></div>
 
@@ -527,9 +533,11 @@ input,button,select{font-family:inherit}
         break
       case 'sync':
         eventData = msg.payload
+        buildEventVersionNames()
         // Persist active filter across syncs
         buildPhotoOrder()
         renderGrid()
+        renderVersionFilterBar()
         if (currentPhotoIndex >= 0) {
           // Refresh versions for current photo
           const id = photoOrder[currentPhotoIndex]
@@ -547,6 +555,32 @@ input,button,select{font-family:inherit}
         break
       case 'tagAction':
         showToast(msg.nickname + (msg.action === 'added' ? ' 标记了 ' : ' 移除了 ') + msg.tagName)
+        break
+      case 'versionAdded':
+        // New version uploaded — update eventData in-place and re-render
+        if (msg.data && msg.data.photoId && msg.data.version) {
+          const photo = eventData.photos?.[msg.data.photoId]
+          if (photo) {
+            if (!photo.versions) photo.versions = []
+            // Avoid duplicates
+            const exists = photo.versions.some(v => v.id === msg.data.version.id)
+            if (!exists) {
+              photo.versions.push(msg.data.version)
+              // Rebuild version names and re-render everything
+              buildEventVersionNames()
+              renderGrid()
+              renderVersionFilterBar()
+              renderTagFilterBar()
+              // If currently viewing this photo, refresh version panel
+              const currentId = photoOrder[currentPhotoIndex]
+              if (currentId === msg.data.photoId) {
+                currentVersions = photo.versions
+                renderVersionPanel()
+                renderDetail()
+              }
+            }
+          }
+        }
         break
       case 'shutdown':
         // Host stopped sharing — prevent reconnect, show message
@@ -577,6 +611,18 @@ input,button,select{font-family:inherit}
         // Photo must have every tag in the active set
         for (const tid of activeFilterTagIds) {
           if (!p.tags.includes(tid)) return false
+        }
+        return true
+      })
+    }
+    // Apply version filter (AND logic: photo must have ALL selected versions)
+    if (activeFilterVersionNames.size > 0) {
+      ids = ids.filter(id => {
+        const p = eventData.photos[id]
+        if (!p || !p.versions) return false
+        const photoAbbrs = new Set(p.versions.map(v => abbrevVersionName(v.versionName)))
+        for (const filterName of activeFilterVersionNames) {
+          if (!photoAbbrs.has(abbrevVersionName(filterName))) return false
         }
         return true
       })
@@ -622,9 +668,8 @@ input,button,select{font-family:inherit}
       const badges = pTags.map(t => '<span style="background:' + (t.color || '#6366f1') + '80">' + escHtml(t.name) + '</span>').join('')
       const thumbUrl = '/thumbnail/' + id
       const hasMyTag = pTags.some(t => t && t.name === myNickname)
-      // Version badges (dedup, max 3)
-      const verNames = (photo.versions || []).map(v => v.versionName)
-      const verBadgesHtml = versionBadgeHtml(verNames)
+      // Version badges — pass full version objects for sorting + separation
+      const verBadgesHtml = versionBadgeHtml(photo.versions || [])
       html += '<div class="photo-card' + (hasMyTag ? ' has-my-tag' : '') + '" data-photo-id="' + id + '">'
         + '<img src="' + thumbUrl + '" alt="' + escHtml(photo.fileName || '') + '" loading="lazy" />'
         + '<span class="dbl-hint">⚡双击标记</span>'
@@ -868,25 +913,48 @@ input,button,select{font-family:inherit}
     })
   }
 
-  function versionBadgeHtml(names) {
-    if (!names || names.length === 0) return ''
-    const seen = new Set()
-    let html = ''
-    let count = 0
-    for (const n of names) {
-      const abbr = abbrevVersionName(n)
-      if (seen.has(abbr)) continue
-      seen.add(abbr)
-      let bg = 'rgba(147,51,234,.8)' // default purple
-      if (['RAW','DNG'].includes(abbr)) bg = 'rgba(234,179,8,.8)'
+  function versionBadgeHtml(versions) {
+    if (!versions || versions.length === 0) return ''
+    // Sort by createdAt (upload time)
+    const sorted = [...versions].sort((a, b) => {
+      return (a.createdAt || '').localeCompare(b.createdAt || '')
+    })
+    const FORMAT_KEYS = new Set(['RAW','DNG','JPEG','PNG','HEIC','TIFF','AVIF','原始RAW','原始DNG','相机JPEG','相机PNG','相机HEIC','原始TIFF','相机AVIF'])
+    const isFormat = (v) => FORMAT_KEYS.has(v.versionName) || ['RAW','DNG','JPEG','PNG','HEIC','TIFF','AVIF'].includes(abbrevVersionName(v.versionName))
+    const formatVersions = sorted.filter(v => isFormat(v))
+    const userVersions = sorted.filter(v => !isFormat(v))
+    const seenFormat = new Set()
+    let formatHtml = ''
+    for (const v of formatVersions) {
+      const abbr = abbrevVersionName(v.versionName)
+      if (seenFormat.has(abbr)) continue
+      seenFormat.add(abbr)
+      let bg = 'rgba(147,51,234,.8)'
+      if (abbr === 'RAW' || abbr === 'DNG') bg = 'rgba(234,179,8,.8)'
       else if (['JPEG','PNG','HEIC','AVIF'].includes(abbr)) bg = 'rgba(37,99,235,.8)'
       else if (abbr === 'TIFF') bg = 'rgba(8,145,178,.8)'
-      else if (n.includes('修图') || n.includes('上传') || n.includes('手机')) bg = 'rgba(22,163,74,.8)'
-      const fg = ['RAW','DNG'].includes(abbr) ? '#000' : '#fff'
-      html += '<span style="background:' + bg + ';color:' + fg + '">' + escHtml(abbr) + '</span>'
-      count++
-      if (count >= 3) break
+      const fg = (abbr === 'RAW' || abbr === 'DNG') ? '#000' : '#fff'
+      formatHtml += '<span style="background:' + bg + ';color:' + fg + '">' + escHtml(abbr) + '</span>'
     }
+    function userColor(username) {
+      let hash = 0
+      for (let i = 0; i < username.length; i++) {
+        hash = username.charCodeAt(i) + ((hash << 5) - hash)
+      }
+      const hue = Math.abs(hash) % 360
+      return 'hsla(' + hue + ', 55%, 45%, 0.8)'
+    }
+    let userHtml = ''
+    for (const v of userVersions) {
+      // Show full version name with underscores replaced (e.g. "rick_1" → "rick · 1")
+      const label = v.versionName.replace(/_/g, ' · ')
+      const username = v.uploadedBy || label.split(' · ')[0]
+      const bg = userColor(username)
+      userHtml += '<span style="background:' + bg + ';color:#fff">' + escHtml(label) + '</span>'
+    }
+    let html = ''
+    if (formatHtml) html += '<div class="ver-row">' + formatHtml + '</div>'
+    if (userHtml) html += '<div class="ver-row">' + userHtml + '</div>'
     return html
   }
 
@@ -1194,6 +1262,66 @@ input,button,select{font-family:inherit}
     })
   }
 
+  // ─── Version Filter ────────────────────────────────────────────────────
+  const activeFilterVersionNames = new Set()
+  let eventVersionNames = []
+
+  function buildEventVersionNames() {
+    if (!eventData || !eventData.photos) { eventVersionNames = []; return }
+    const seen = new Set()
+    const names = []
+    for (const id of Object.keys(eventData.photos)) {
+      const photo = eventData.photos[id]
+      if (!photo || !photo.versions) continue
+      for (const v of photo.versions) {
+        const abbr = abbrevVersionName(v.versionName)
+        if (!seen.has(abbr)) {
+          seen.add(abbr)
+          names.push(v.versionName)
+        }
+      }
+    }
+    eventVersionNames = names
+  }
+
+  function renderVersionFilterBar() {
+    const bar = document.getElementById('version-filter-bar')
+    if (!bar) return
+    if (eventVersionNames.length === 0) { bar.style.display = 'none'; return }
+    bar.style.display = 'flex'
+    let html = '<span class="filter-label">📁 版本:</span>'
+    // "All" chip
+    const isAll = activeFilterVersionNames.size === 0
+    html += '<button class="tag-filter-chip' + (isAll ? ' active' : '') + '" data-vname="">全部</button>'
+    for (const name of eventVersionNames) {
+      const active = activeFilterVersionNames.has(name)
+      const abbr = abbrevVersionName(name)
+      html += '<button class="tag-filter-chip' + (active ? ' active' : '') + '" data-vname="' + escAttr(name) + '">' + escHtml(abbr) + '</button>'
+    }
+    bar.innerHTML = html
+
+    bar.querySelectorAll('.tag-filter-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = btn.getAttribute('data-vname')
+        if (!name) {
+          activeFilterVersionNames.clear()
+        } else if (activeFilterVersionNames.has(name)) {
+          activeFilterVersionNames.delete(name)
+        } else {
+          activeFilterVersionNames.add(name)
+        }
+        buildPhotoOrder()
+        if (currentPhotoIndex >= 0 && !photoOrder.includes(photoOrder[currentPhotoIndex])) {
+          currentPhotoIndex = -1
+          photoDetail.classList.remove('show')
+        }
+        renderGrid()
+        renderVersionFilterBar()
+        updatePhotoCount()
+      })
+    })
+  }
+
   // ─── Toast ──────────────────────────────────────────────────────────────
   function showToast(text) {
     const el = document.createElement('div')
@@ -1228,6 +1356,7 @@ input,button,select{font-family:inherit}
 
   // ─── Helpers ────────────────────────────────────────────────────────────
   function escHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+  function escAttr(s) { return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;') }
 
   function updatePhotoCount() {
     const total = eventData && eventData.photos ? Object.keys(eventData.photos).filter(id => !eventData.photos[id].deletedAt).length : 0
@@ -1270,6 +1399,7 @@ input,button,select{font-family:inherit}
         renderGrid()
         renderUsersBar()
         renderTagFilterBar()
+        renderVersionFilterBar()
         renderSortButtons()
         connectWs()
       })

@@ -15,6 +15,8 @@ export function InspectorPanel(): React.JSX.Element {
   const [filterTagIds, setFilterTagIds] = useState<Set<string>>(new Set())
   const [showAddTag, setShowAddTag] = useState(false)
   const [newTagName, setNewTagName] = useState('')
+  const [filterVersionNames, setFilterVersionNames] = useState<Set<string>>(new Set())
+  const [eventVersionNames, setEventVersionNames] = useState<string[]>([])
 
   // Load all tags for current event
   useEffect(() => {
@@ -29,6 +31,14 @@ export function InspectorPanel(): React.JSX.Element {
     return () => window.removeEventListener('refresh-tags', loadTags)
   }, [selectedEventId])
 
+  // Load version names for current event (for version filter)
+  useEffect(() => {
+    if (!selectedEventId) { setEventVersionNames([]); return }
+    window.electron.ipcRenderer.invoke('photos:listVersionNames', selectedEventId)
+      .then((r: unknown) => setEventVersionNames(r as string[]))
+      .catch(() => setEventVersionNames([]))
+  }, [selectedEventId])
+
   // Load tags for selected photo
   useEffect(() => {
     if (!selectedPhoto) { setPhotoTags([]); return }
@@ -37,19 +47,38 @@ export function InspectorPanel(): React.JSX.Element {
     }).catch(() => setPhotoTags([]))
   }, [selectedPhoto?.id])
 
-  // Filter photos when filterTagIds changes
+  // Filter photos when filterTagIds or filterVersionNames changes
   useEffect(() => {
     if (!selectedEventId) return
     setLoading(true)
-    const tagIds = Array.from(filterTagIds)
-    const invoke = tagIds.length > 0
-      ? window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds, sortBy })
-      : window.electron.ipcRenderer.invoke('photos:listByEvent', selectedEventId, sortBy)
-    invoke.then((result: any) => {
+
+    const hasTagFilter = filterTagIds.size > 0
+    const hasVersionFilter = filterVersionNames.size > 0
+
+    let promise: Promise<any>
+    if (hasTagFilter && hasVersionFilter) {
+      // Both filters active: first filter by version, then intersect with tag filter
+      const tagIds = Array.from(filterTagIds)
+      const versionNames = Array.from(filterVersionNames)
+      promise = window.electron.ipcRenderer.invoke('photos:listByVersionNames', { eventId: selectedEventId, versionNames, sortBy })
+        .then(async (byVersion: any) => {
+          const byVersionIds = new Set(byVersion.map((p: any) => p.id))
+          const byTag = await window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds, sortBy })
+          return byTag.filter((p: any) => byVersionIds.has(p.id))
+        })
+    } else if (hasVersionFilter) {
+      promise = window.electron.ipcRenderer.invoke('photos:listByVersionNames', { eventId: selectedEventId, versionNames: Array.from(filterVersionNames), sortBy })
+    } else if (hasTagFilter) {
+      promise = window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds: Array.from(filterTagIds), sortBy })
+    } else {
+      promise = window.electron.ipcRenderer.invoke('photos:listByEvent', selectedEventId, sortBy)
+    }
+
+    promise.then((result: any) => {
       setPhotos(result)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [filterTagIds, selectedEventId, sortBy])
+  }, [filterTagIds, filterVersionNames, selectedEventId, sortBy])
 
   const toggleFilter = (tagId: string): void => {
     setFilterTagIds(prev => {
@@ -337,6 +366,65 @@ export function InspectorPanel(): React.JSX.Element {
                   >
                     {tag.name}
                     {active && filterTagIds.size > 1 && (
+                      <span className="ml-1 opacity-70">✓</span>
+                    )}
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Version filter — below tag filter */}
+      <div className="border-t border-[var(--color-border)] shrink-0">
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] text-gray-400 uppercase tracking-wider">版本筛选</span>
+            {filterVersionNames.size > 0 && (
+              <button
+                onClick={() => setFilterVersionNames(new Set())}
+                className="text-[10px] text-[#007AFF] hover:underline"
+              >
+                清除筛选
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5 max-h-[4.5rem] overflow-y-auto">
+            {eventVersionNames.length === 0 ? (
+              <span className="text-[10px] text-gray-400">暂无版本</span>
+            ) : (
+              eventVersionNames.map(name => {
+                const active = filterVersionNames.has(name)
+                const abbr = name.includes('修图') || name.includes('上传') || name.includes('手机') || name.includes('_')
+                  ? name.replace(/_/g, ' · ')
+                  : name
+                const isUserVersion = name.includes('修图') || name.includes('上传') || name.includes('手机') || name.includes('_')
+                return (
+                  <button
+                    key={name}
+                    onClick={() => {
+                      setFilterVersionNames(prev => {
+                        const next = new Set(prev)
+                        if (next.has(name)) next.delete(name)
+                        else next.add(name)
+                        return next
+                      })
+                    }}
+                    className={cn(
+                      'px-1.5 py-0.5 rounded text-[10px] font-medium transition-all',
+                      active ? 'ring-1 ring-offset-1 ring-offset-transparent text-white' : 'opacity-60 hover:opacity-100'
+                    )}
+                    style={{
+                      backgroundColor: active
+                        ? (isUserVersion ? '#16a34a' : '#6366f1')
+                        : (isUserVersion ? 'rgba(22,163,74,0.3)' : 'rgba(99,102,241,0.3)'),
+                      color: active ? '#fff' : (isUserVersion ? '#16a34a' : '#6366f1'),
+                      outline: active ? `2px solid ${isUserVersion ? '#16a34a' : '#6366f1'}` : 'none',
+                    }}
+                  >
+                    {abbr}
+                    {active && filterVersionNames.size > 1 && (
                       <span className="ml-1 opacity-70">✓</span>
                     )}
                   </button>

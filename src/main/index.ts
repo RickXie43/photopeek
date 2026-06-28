@@ -10,7 +10,7 @@ import { registerCacheHandlers } from './ipc/cache.handler'
 import { registerTagHandlers } from './ipc/tag.handler'
 import { registerShareHandlers } from './ipc/share.handler'
 import { registerUpdateHandlers } from './ipc/update.handler'
-import { getConfig, saveConfig, updateLibraryPath, getLibraryPath, type PhotoPeekConfig } from './services/library.service'
+import { getConfig, saveConfig, updateLibraryPath, getLibraryPath, getThumbnailsDir, type PhotoPeekConfig } from './services/library.service'
 import * as fs from 'fs'
 
 let mainWindow: BrowserWindow | null = null
@@ -86,6 +86,56 @@ app.whenReady().then(async () => {
         filePath = path.resolve(filePath)
       }
       if (!fs.existsSync(filePath)) {
+        // If file is under thumbnails dir, try to auto-regenerate on the fly
+        const thumbnailsDir = getThumbnailsDir()
+        if (filePath.startsWith(thumbnailsDir)) {
+          try {
+            const { generateThumbnail } = await import('./services/thumbnail.service')
+            const { getDb } = await import('./db/connection')
+            const db = getDb()
+            // Normalize path for matching (both DB and request paths use forward slashes)
+            const normalizedPath = path.resolve(filePath).replace(/\\/g, '/')
+            const vRows = db.exec('SELECT id, photo_id, file_path, file_name, thumbnail_path FROM photo_versions WHERE thumbnail_path IS NOT NULL')
+            if (vRows.length > 0 && vRows[0].values.length > 0) {
+              const { columns, values } = vRows[0]
+              for (const row of values) {
+                const dbThumbPath = (row[columns.indexOf('thumbnail_path')] as string) || ''
+                if (path.resolve(dbThumbPath).replace(/\\/g, '/') !== normalizedPath) continue
+                const versionId = row[columns.indexOf('id')] as string
+                const sourcePath = row[columns.indexOf('file_path')] as string
+                const photoId = row[columns.indexOf('photo_id')] as string
+                if (!sourcePath || !fs.existsSync(sourcePath)) break
+                const pRows = db.exec('SELECT event_id FROM photos WHERE id = ?', [photoId])
+                if (pRows.length === 0 || pRows[0].values.length === 0) break
+                const eventId = pRows[0].values[0][0] as string
+                const { getEventFolderName } = await import('./ipc/event.handler')
+                const folderName = getEventFolderName(eventId)
+                const newPath = await generateThumbnail(sourcePath, versionId, eventId, folderName)
+                if (newPath) {
+                  db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [newPath, versionId])
+                  db.run(`
+                    UPDATE photos SET thumbnail_path = (
+                      SELECT v.thumbnail_path FROM photo_versions v
+                      WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+                      ORDER BY v.is_original DESC, v.created_at ASC LIMIT 1
+                    ) WHERE id = ?
+                  `, [photoId])
+                  const { persistDatabase } = await import('./db/connection')
+                  persistDatabase()
+                  console.log('[photo protocol] Auto-regenerated thumbnail:', path.basename(filePath))
+                  // Serve the newly generated file
+                  const buf = fs.readFileSync(newPath)
+                  return new Response(new Uint8Array(buf), {
+                    headers: { 'content-type': 'image/jpeg' }
+                  })
+                }
+                break
+              }
+            }
+          } catch (regenErr) {
+            console.error('[photo protocol] Auto-regeneration failed:', regenErr)
+          }
+        }
         console.error('[photo protocol] File not found:', filePath)
         return new Response(null, { status: 404 })
       }
@@ -135,59 +185,7 @@ app.whenReady().then(async () => {
     console.error('Startup event.json sync failed:', err)
   }
 
-  // Regenerate missing thumbnails on startup
-  try {
-    const { getDb } = await import('./db/connection')
-    const { generateThumbnail } = await import('./services/thumbnail.service')
-    const { getEventFolderName } = await import('./ipc/event.handler')
-    const db = getDb()
-
-    // Find all photo_versions that lack thumbnails (thumbnail_path IS NULL or file missing)
-    const rows = db.exec(`
-      SELECT v.id, v.photo_id, v.file_path, v.file_name, p.event_id
-      FROM photo_versions v
-      JOIN photos p ON p.id = v.photo_id
-      WHERE p.deleted_at IS NULL
-        AND (v.thumbnail_path IS NULL OR v.thumbnail_path = '')
-    `)
-    if (rows.length > 0 && rows[0].values.length > 0) {
-      const { columns, values } = rows[0]
-      let regenerated = 0
-      for (const row of values) {
-        const vid = row[columns.indexOf('id')] as string
-        const filePath = row[columns.indexOf('file_path')] as string
-        const eventId = row[columns.indexOf('event_id')] as string
-        if (filePath && fs.existsSync(filePath)) {
-          try {
-            const folderName = getEventFolderName(eventId)
-            const thumbPath = await generateThumbnail(filePath, vid, eventId, folderName)
-            if (thumbPath) {
-              db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, vid])
-              regenerated++
-            }
-          } catch (err) {
-            console.error('[Startup] Failed to regenerate thumbnail for', vid, err)
-          }
-        }
-      }
-      if (regenerated > 0) {
-        const { persistDatabase } = await import('./db/connection')
-        // Sync photos.thumbnail_path to best version's thumbnail
-        db.run(`
-          UPDATE photos SET thumbnail_path = (
-            SELECT v.thumbnail_path FROM photo_versions v
-            WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
-            ORDER BY v.is_original DESC LIMIT 1
-          )
-        `)
-        persistDatabase()
-        console.log('[Startup] Regenerated', regenerated, 'missing thumbnails')
-      }
-    }
-  } catch (err) {
-    console.error('[Startup] Thumbnail regeneration failed:', err)
-  }
-  // Always sync photos.thumbnail_path from versions on startup (fix existing DB)
+  // Fast: sync photos.thumbnail_path from versions on startup
   try {
     const { getDb } = await import('./db/connection')
     const db = getDb()
@@ -206,55 +204,6 @@ app.whenReady().then(async () => {
     console.log('[Startup] Synced thumbnail_path for photos')
   } catch (err) {
     console.error('[Startup] Thumbnail path sync failed:', err)
-  }
-
-  // Migrate: create photo_versions for existing photos that lack them
-  try {
-    const { getDb } = await import('./db/connection')
-    const { v4: uuidV4 } = await import('uuid')
-    const db = getDb()
-    const orphanRows = db.exec(`
-      SELECT p.id, p.file_path, p.file_name, p.file_size, p.width, p.height, p.metadata, p.created_at
-      FROM photos p
-      WHERE p.deleted_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM photo_versions v WHERE v.photo_id = p.id)
-    `)
-    if (orphanRows.length > 0 && orphanRows[0].values.length > 0) {
-      const { columns, values } = orphanRows[0]
-      let created = 0
-      for (const row of values) {
-        const photoId = row[columns.indexOf('id')] as string
-        const filePath = row[columns.indexOf('file_path')] as string
-        const fileName = row[columns.indexOf('file_name')] as string
-        const fileSize = row[columns.indexOf('file_size')] as number
-        const width = row[columns.indexOf('width')] as number
-        const height = row[columns.indexOf('height')] as number
-        const metadata = (row[columns.indexOf('metadata')] || null) as string | null
-        const createdAt = (row[columns.indexOf('created_at')] || new Date().toISOString()) as string
-
-        const ext = (fileName || '').split('.').pop()?.toLowerCase() || ''
-        const rawExts = ['cr2','cr3','nef','arw','rw2','orf','raf','srf','sr2','raw']
-        const versionName = rawExts.includes(ext) ? 'RAW'
-          : ext === 'dng' ? 'DNG'
-          : ext === 'tiff' || ext === 'tif' ? 'TIFF'
-          : ext === 'png' ? 'PNG'
-          : ext === 'heic' || ext === 'heif' ? 'HEIC'
-          : ext === 'avif' ? 'AVIF'
-          : '原始文件'
-
-        db.run(`INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, metadata, is_original, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-          [uuidV4(), photoId, versionName, filePath, fileName, fileSize, width, height, metadata, createdAt])
-        created++
-      }
-      if (created > 0) {
-        const { persistDatabase } = await import('./db/connection')
-        persistDatabase()
-        console.log('[Startup] Created', created, 'default versions for existing photos')
-      }
-    }
-  } catch (err) {
-    console.error('[Startup] Version migration failed:', err)
   }
 
   // IPC: get file stats (used by version import)
@@ -282,6 +231,64 @@ app.whenReady().then(async () => {
       return `data:${contentType};base64,${data.toString('base64')}`
     } catch {
       return null
+    }
+  })
+
+  // IPC: regenerate a missing thumbnail by its file path
+  ipcMain.handle('thumbnail:regenerateFromPath', async (_event, thumbFilePath: string) => {
+    try {
+      if (fs.existsSync(thumbFilePath)) return true // already exists
+      const { getDb } = await import('./db/connection')
+      const { generateThumbnail, batchGenerateThumbnails } = await import('./services/thumbnail.service')
+      const { getEventFolderName } = await import('./ipc/event.handler')
+      const db = getDb()
+
+      // Normalize path for matching
+      const normalizedPath = path.resolve(thumbFilePath).replace(/\\/g, '/')
+
+      // Find the photo_version that has this thumbnail_path
+      const rows = db.exec('SELECT id, photo_id, file_path, file_name FROM photo_versions WHERE thumbnail_path IS NOT NULL')
+      if (rows.length === 0 || rows[0].values.length === 0) return false
+      const { columns, values } = rows[0]
+
+      for (const row of values) {
+        const dbThumbPath = (row[columns.indexOf('thumbnail_path')] as string) || ''
+        if (path.resolve(dbThumbPath).replace(/\\/g, '/') !== normalizedPath) continue
+
+        const versionId = row[columns.indexOf('id')] as string
+        const filePath = row[columns.indexOf('file_path')] as string
+        const photoId = row[columns.indexOf('photo_id')] as string
+
+        // Find event_id from photos table
+        const pRows = db.exec('SELECT event_id FROM photos WHERE id = ?', [photoId])
+        if (pRows.length === 0 || pRows[0].values.length === 0) return false
+        const eventId = pRows[0].values[0][0] as string
+        const folderName = getEventFolderName(eventId)
+
+        if (filePath && fs.existsSync(filePath)) {
+          const newThumbPath = await generateThumbnail(filePath, versionId, eventId, folderName)
+          if (newThumbPath) {
+            db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [newThumbPath, versionId])
+            // Also update photos.thumbnail_path if this is the best version
+            db.run(`
+              UPDATE photos SET thumbnail_path = (
+                SELECT v.thumbnail_path FROM photo_versions v
+                WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+                ORDER BY v.is_original DESC, v.created_at ASC LIMIT 1
+              ) WHERE id = ?
+            `, [photoId])
+            const { persistDatabase } = await import('./db/connection')
+            persistDatabase()
+            console.log('[IPC] Regenerated thumbnail for version', versionId)
+            return true
+          }
+        }
+        return false
+      }
+      return false
+    } catch (err) {
+      console.error('[IPC] thumbnail:regenerateFromPath failed:', err)
+      return false
     }
   })
 
@@ -328,6 +335,117 @@ app.whenReady().then(async () => {
   ipcMain.on('ping', () => console.log('pong'))
 
   createWindow()
+
+  // Deferred background startup tasks — run after window is shown
+  setTimeout(async () => {
+    // Regenerate missing thumbnails on startup (background, non-blocking)
+    try {
+      const { getDb } = await import('./db/connection')
+      const { generateThumbnail } = await import('./services/thumbnail.service')
+      const { getEventFolderName } = await import('./ipc/event.handler')
+      const db = getDb()
+
+      const vRows = db.exec(`
+        SELECT v.id, v.photo_id, v.file_path, v.file_name, v.thumbnail_path, p.event_id
+        FROM photo_versions v
+        JOIN photos p ON p.id = v.photo_id
+        WHERE p.deleted_at IS NULL
+          AND v.file_path IS NOT NULL AND v.file_path != ''
+      `)
+      if (vRows.length > 0 && vRows[0].values.length > 0) {
+        const { columns, values } = vRows[0]
+        let regenerated = 0
+        for (const row of values) {
+          const thumbPath = row[columns.indexOf('thumbnail_path')] as string | null
+          if (thumbPath && fs.existsSync(thumbPath)) continue
+
+          const vid = row[columns.indexOf('id')] as string
+          const filePath = row[columns.indexOf('file_path')] as string
+          const eventId = row[columns.indexOf('event_id')] as string
+          if (filePath && fs.existsSync(filePath)) {
+            try {
+              const folderName = getEventFolderName(eventId)
+              const thumbPathNew = await generateThumbnail(filePath, vid, eventId, folderName)
+              if (thumbPathNew) {
+                db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPathNew, vid])
+                regenerated++
+              }
+            } catch (err) {
+              console.error('[Background] Thumbnail gen failed for', vid, err)
+            }
+          }
+        }
+        if (regenerated > 0) {
+          const { persistDatabase } = await import('./db/connection')
+          db.run(`
+            UPDATE photos SET thumbnail_path = (
+              SELECT v.thumbnail_path FROM photo_versions v
+              WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+              ORDER BY v.is_original DESC, v.created_at ASC LIMIT 1
+            )
+          `)
+          persistDatabase()
+          console.log('[Background] Regenerated', regenerated, 'missing thumbnails')
+          // Notify renderer to refresh — safe because photos:listByEvent no longer triggers repair
+          const wins = BrowserWindow.getAllWindows()
+          if (wins.length > 0) {
+            wins[0].webContents.send('photos:thumbnails-repaired', '__all__')
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Background] Thumbnail regeneration failed:', err)
+    }
+
+    // Migrate: create photo_versions for existing photos that lack them
+    try {
+      const { getDb } = await import('./db/connection')
+      const { v4: uuidV4 } = await import('uuid')
+      const db = getDb()
+      const orphanRows = db.exec(`
+        SELECT p.id, p.file_path, p.file_name, p.file_size, p.width, p.height, p.metadata, p.created_at
+        FROM photos p
+        WHERE p.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM photo_versions v WHERE v.photo_id = p.id)
+      `)
+      if (orphanRows.length > 0 && orphanRows[0].values.length > 0) {
+        const { columns, values } = orphanRows[0]
+        let created = 0
+        for (const row of values) {
+          const photoId = row[columns.indexOf('id')] as string
+          const filePath = row[columns.indexOf('file_path')] as string
+          const fileName = row[columns.indexOf('file_name')] as string
+          const fileSize = row[columns.indexOf('file_size')] as number
+          const width = row[columns.indexOf('width')] as number
+          const height = row[columns.indexOf('height')] as number
+          const metadata = (row[columns.indexOf('metadata')] || null) as string | null
+          const createdAt = (row[columns.indexOf('created_at')] || new Date().toISOString()) as string
+
+          const ext = (fileName || '').split('.').pop()?.toLowerCase() || ''
+          const rawExts = ['cr2','cr3','nef','arw','rw2','orf','raf','srf','sr2','raw']
+          const versionName = rawExts.includes(ext) ? 'RAW'
+            : ext === 'dng' ? 'DNG'
+            : ext === 'tiff' || ext === 'tif' ? 'TIFF'
+            : ext === 'png' ? 'PNG'
+            : ext === 'heic' || ext === 'heif' ? 'HEIC'
+            : ext === 'avif' ? 'AVIF'
+            : '原始文件'
+
+          db.run(`INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, metadata, is_original, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+            [uuidV4(), photoId, versionName, filePath, fileName, fileSize, width, height, metadata, createdAt])
+          created++
+        }
+        if (created > 0) {
+          const { persistDatabase } = await import('./db/connection')
+          persistDatabase()
+          console.log('[Background] Created', created, 'default versions for existing photos')
+        }
+      }
+    } catch (err) {
+      console.error('[Background] Version migration failed:', err)
+    }
+  }, 0)
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

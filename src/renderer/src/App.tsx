@@ -139,6 +139,15 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('refresh-photos', handler)
   }, [refreshData])
 
+  // Listen for background thumbnail repair completion → refresh photos
+  // Safe: only triggered by startup background task, NOT by photos:listByEvent
+  useEffect(() => {
+    const unsub = window.electron.ipcRenderer.on('photos:thumbnails-repaired', () => {
+      refreshData()
+    })
+    return () => { unsub() }
+  }, [refreshData])
+
   // Load trash photos when switching to trash view
   useEffect(() => {
     if (!showingTrash) return

@@ -28,6 +28,17 @@ export function PhotoThumbnail({
           setBase64Src(dataUrl)
           return
         }
+
+        // Last resort: request main process to regenerate the missing thumbnail
+        const regenerated = await window.electron.ipcRenderer.invoke('thumbnail:regenerateFromPath', decodedPath) as boolean
+        if (regenerated) {
+          // Retry loading via base64 now that thumbnail is regenerated
+          const dataUrl2 = await window.electron.ipcRenderer.invoke('image:readBase64', decodedPath) as string | null
+          if (dataUrl2) {
+            setBase64Src(dataUrl2)
+            return
+          }
+        }
       }
     } catch {
       // Silently fail

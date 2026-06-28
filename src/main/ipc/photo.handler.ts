@@ -4,6 +4,7 @@ import type { Photo, PhotoVersion } from '../../renderer/src/types/photo'
 import { syncEventJsonPhotos, getEventFolderName } from './event.handler'
 import { getEventDir } from '../services/library.service'
 import { parseMetadata } from '../services/metadata.service'
+import { generateThumbnail } from '../services/thumbnail.service'
 import { v4 as uuid } from 'uuid'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -161,6 +162,64 @@ async function repairMetadata(db: ReturnType<typeof getDb>, photos: Record<strin
   }
 }
 
+/**
+ * Check photo_versions for this event and regenerate thumbnails
+ * where the thumbnail_path file is missing on disk or thumbnail_path is NULL.
+ * Returns the number of thumbnails regenerated.
+ */
+async function repairMissingThumbnails(
+  db: ReturnType<typeof getDb>,
+  eventId: string
+): Promise<number> {
+  // Find versions with missing thumbnails (NULL path OR file doesn't exist on disk)
+  const rows = queryAll(db, `
+    SELECT v.id, v.photo_id, v.file_path, v.file_name, v.thumbnail_path
+    FROM photo_versions v
+    JOIN photos p ON p.id = v.photo_id
+    WHERE p.event_id = ? AND p.deleted_at IS NULL
+      AND v.file_path IS NOT NULL AND v.file_path != ''
+  `, [eventId])
+
+  const folderName = getEventFolderName(eventId)
+  let regenerated = 0
+
+  for (const row of rows) {
+    const thumbPath = row.thumbnail_path as string | null
+    // Skip if thumbnail exists and file is on disk
+    if (thumbPath && fs.existsSync(thumbPath)) continue
+
+    const versionId = row.id as string
+    const filePath = row.file_path as string
+    if (!filePath || !fs.existsSync(filePath)) continue
+
+    try {
+      const newThumbPath = await generateThumbnail(filePath, versionId, eventId, folderName)
+      if (newThumbPath) {
+        db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [newThumbPath, versionId])
+        regenerated++
+      }
+    } catch (err) {
+      console.error(`[Photo] Failed to regenerate thumbnail for version ${versionId}:`, err)
+    }
+  }
+
+  if (regenerated > 0) {
+    // Update photos.thumbnail_path to the best version's thumbnail
+    db.run(`
+      UPDATE photos SET thumbnail_path = (
+        SELECT v.thumbnail_path FROM photo_versions v
+        WHERE v.photo_id = photos.id AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
+        ORDER BY v.is_original DESC, v.created_at ASC LIMIT 1
+      )
+      WHERE event_id = ? AND deleted_at IS NULL
+    `, [eventId])
+    persistDatabase()
+    console.log(`[Photo] Regenerated ${regenerated} missing thumbnails for event ${eventId}`)
+    return regenerated
+  }
+  return 0
+}
+
 export function registerPhotoHandlers(): void {
   ipcMain.handle('photos:listByEvent', async (_event, eventId: string, sortBy?: string) => {
     const db = getDb()
@@ -174,7 +233,7 @@ export function registerPhotoHandlers(): void {
     const photos = rows.map(deserializePhoto)
     attachVersionSummary(db, photos)
 
-    console.log('[IPC] photos:listByEvent →', rows.length, 'photos for', eventId, 'sortBy:', sortBy || 'created_at')
+    console.log('[IPC] photos:listByEvent →', photos.length, 'photos for', eventId, 'sortBy:', sortBy || 'created_at')
     return photos
   })
 
@@ -660,6 +719,70 @@ export function registerPhotoHandlers(): void {
       return { migrated: 0 }
     }
   })
+
+  // ── Version name filtering for InspectorPanel ──
+  ipcMain.handle('photos:listVersionNames', async (_event, eventId: string): Promise<string[]> => {
+    const db = getDb()
+    const rows = queryAll(db, `
+      SELECT DISTINCT v.version_name FROM photo_versions v
+      JOIN photos p ON p.id = v.photo_id
+      WHERE p.event_id = ? AND p.deleted_at IS NULL
+      ORDER BY v.created_at ASC
+    `, [eventId])
+    // Deduplicate by abbreviated name (e.g. "RAW" and "原始RAW" → show once as "RAW")
+    const seen = new Map<string, string>()  // abbr → original
+    for (const row of rows) {
+      const orig = row.version_name as string
+      const abbr = abbrevVersionName(orig)
+      if (!seen.has(abbr)) seen.set(abbr, orig)
+    }
+    return Array.from(seen.values())
+  })
+
+  ipcMain.handle('photos:listByVersionNames', async (_event, data: { eventId: string; versionNames: string[]; sortBy?: string }): Promise<Photo[]> => {
+    const db = getDb()
+    const orderCol = data.sortBy === 'file_name' ? 'file_name' : 'created_at'
+
+    if (data.versionNames.length === 0) {
+      const rows = queryAll(db, `SELECT * FROM photos WHERE event_id = ? AND deleted_at IS NULL ORDER BY ${orderCol} ASC`, [data.eventId])
+      const photos = rows.map(deserializePhoto)
+      attachVersionSummary(db, photos)
+      return photos
+    }
+
+    // Expand abbreviated names to match raw DB values (e.g. "RAW" matches "RAW" and "原始RAW")
+    const allRows = queryAll(db, `SELECT DISTINCT version_name FROM photo_versions`)
+    const expandedNames = new Set<string>()
+    for (const filterName of data.versionNames) {
+      const filterAbbr = abbrevVersionName(filterName)
+      for (const row of allRows) {
+        const dbName = row.version_name as string
+        if (abbrevVersionName(dbName) === filterAbbr) {
+          expandedNames.add(dbName)
+        }
+      }
+    }
+
+    if (expandedNames.size === 0) {
+      return []
+    }
+
+    const placeholders = Array.from(expandedNames).map(() => '?').join(',')
+    const versionCount = expandedNames.size
+    const rows = queryAll(db, `
+      SELECT p.* FROM photos p
+      WHERE p.event_id = ? AND p.deleted_at IS NULL
+        AND (
+          SELECT COUNT(DISTINCT v.version_name) FROM photo_versions v
+          WHERE v.photo_id = p.id AND v.version_name IN (${placeholders})
+        ) = ?
+      ORDER BY p.${orderCol} ASC
+    `, [data.eventId, ...Array.from(expandedNames), versionCount])
+
+    const photos = rows.map(deserializePhoto)
+    attachVersionSummary(db, photos)
+    return photos
+  })
 }
 
 function deserializePhotoVersion(row: Record<string, unknown>): PhotoVersion {
@@ -679,6 +802,18 @@ function deserializePhotoVersion(row: Record<string, unknown>): PhotoVersion {
     uploadedAt: (row.uploaded_at as string) || null,
     createdAt: row.created_at as string,
   }
+}
+
+/** Abbreviate version name for display (shared with filter logic) */
+function abbrevVersionName(name: string): string {
+  if (name === 'RAW' || name === '原始RAW') return 'RAW'
+  if (name === 'DNG' || name === '原始DNG') return 'DNG'
+  if (name === 'JPEG' || name === '相机JPEG') return 'JPEG'
+  if (name === 'PNG' || name === '相机PNG') return 'PNG'
+  if (name === 'HEIC' || name === '相机HEIC') return 'HEIC'
+  if (name === 'TIFF' || name === '原始TIFF') return 'TIFF'
+  if (name === 'AVIF' || name === '相机AVIF') return 'AVIF'
+  return name.slice(0, 12)
 }
 
 /** Copy camera metadata (dateTimeOriginal, cameraMake, Model, Lens, aperture, shutter, ISO, focal)

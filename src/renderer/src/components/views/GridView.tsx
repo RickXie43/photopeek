@@ -5,6 +5,7 @@ import { useEventStore } from '../../stores/eventStore'
 import { cn } from '../../lib/cn'
 import { ImageIcon, RotateCcw, Trash2 } from 'lucide-react'
 import { LoupeView } from './LoupeView'
+import { PhotoThumbnail } from '../photo/PhotoThumbnail'
 
 // Convert Windows path to photo:/// URL (forward slashes)
 function toPhotoUrl(p: string): string {
@@ -250,24 +251,7 @@ export function GridView(): React.JSX.Element {
               onContextMenu={(e) => { e.preventDefault(); togglePhotoSelection(photo.id) }}
             >
               {src ? (
-                <img
-                  src={src}
-                  alt={photo.fileName}
-                  className="w-full h-full object-cover"
-                  loading="lazy"
-                  onError={(e) => {
-                    // Replace broken image with fallback icon
-                    const target = e.currentTarget
-                    target.style.display = 'none'
-                    const parent = target.parentElement
-                    if (parent && !parent.querySelector('.img-fallback')) {
-                      const fallback = document.createElement('div')
-                      fallback.className = 'img-fallback w-full h-full flex items-center justify-center text-gray-400'
-                      fallback.innerHTML = '📷'
-                      parent.appendChild(fallback)
-                    }
-                  }}
-                />
+                <PhotoThumbnail src={src} alt={photo.fileName} />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-gray-400"><ImageIcon size={24} /></div>
               )}
