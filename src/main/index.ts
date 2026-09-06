@@ -9,6 +9,7 @@ import { registerImportHandlers } from './ipc/import.handler'
 import { registerCacheHandlers } from './ipc/cache.handler'
 import { registerTagHandlers } from './ipc/tag.handler'
 import { registerShareHandlers } from './ipc/share.handler'
+import { registerExportHandlers } from './ipc/export.handler'
 import { registerUpdateHandlers } from './ipc/update.handler'
 import { getConfig, saveConfig, updateLibraryPath, getLibraryPath, getThumbnailsDir, type PhotoPeekConfig } from './services/library.service'
 import * as fs from 'fs'
@@ -299,6 +300,7 @@ app.whenReady().then(async () => {
   registerCacheHandlers()
   registerTagHandlers()
   registerShareHandlers()
+  registerExportHandlers()
   registerUpdateHandlers()
 
   // Settings IPC

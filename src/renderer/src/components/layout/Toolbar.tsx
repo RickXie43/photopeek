@@ -1,9 +1,11 @@
 import React from 'react'
-import { Grid3X3, ZoomIn, Columns3, Settings, Trash2, Share2, ArrowUpDown } from 'lucide-react'
+import { Grid3X3, ZoomIn, Columns3, Settings, Trash2, Share2, ArrowUpDown, Upload, FolderOpen } from 'lucide-react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePhotoStore } from '../../stores/photoStore'
+import { useEventStore } from '../../stores/eventStore'
 import { cn } from '../../lib/cn'
 import { ShareDialog } from '../ui/ShareDialog'
+import { ExportDialog } from '../event/ExportDialog'
 import type { SortBy } from '../../types/photo'
 
 export function Toolbar(): React.JSX.Element {
@@ -16,9 +18,12 @@ export function Toolbar(): React.JSX.Element {
     setSettingsDialogOpen,
     sortBy,
     setSortBy,
+    exportDialogOpen,
+    setExportDialogOpen,
   } = useUIStore()
 
   const { selectedPhotoIds, removePhotos } = usePhotoStore()
+  const { selectedEventId } = useEventStore()
   const selectedCount = selectedPhotoIds.size
   const [showShare, setShowShare] = React.useState(false)
 
@@ -101,10 +106,23 @@ export function Toolbar(): React.JSX.Element {
 
         <button
           onClick={() => setImportDialogOpen(true)}
-          className="px-3 py-1 text-xs font-medium bg-[#007AFF] text-white rounded-lg hover:bg-[#0066CC] transition-colors"
+          className="px-3 py-1 text-xs font-medium bg-[#007AFF] text-white rounded-lg hover:bg-[#0066CC] transition-colors flex items-center gap-1"
         >
+          <FolderOpen size={13} />
           导入
         </button>
+
+        {/* Export button (visible when an event is selected) */}
+        {selectedEventId && (
+          <button
+            onClick={() => setExportDialogOpen(true)}
+            className="px-3 py-1 text-xs font-medium bg-[#007AFF] text-white rounded-lg hover:bg-[#0066CC] transition-colors flex items-center gap-1"
+            title="导出事件照片"
+          >
+            <Upload size={13} />
+            导出
+          </button>
+        )}
 
         {/* Batch delete (visible when photos selected) */}
         {selectedCount > 0 && (
@@ -148,6 +166,10 @@ export function Toolbar(): React.JSX.Element {
       </div>
 
       <ShareDialog open={showShare} onClose={() => setShowShare(false)} />
+      <ExportDialog
+        open={exportDialogOpen}
+        onClose={() => setExportDialogOpen(false)}
+      />
     </header>
   )
 }

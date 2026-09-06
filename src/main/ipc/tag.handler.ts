@@ -163,6 +163,40 @@ export function registerTagHandlers(): void {
     return { hasTag: !hasTag }
   })
 
+  ipcMain.handle('photos:listByTagsOr', async (_event, data: { eventId: string; tagIds: string[]; sortBy?: string }): Promise<Photo[]> => {
+    const db = getDb()
+    let rows: Record<string, unknown>[] = []
+    const orderCol = data.sortBy === 'file_name' ? 'file_name' : 'created_at'
+
+    if (data.tagIds.length === 0) {
+      const result = db.exec(`SELECT * FROM photos WHERE event_id = ? AND deleted_at IS NULL ORDER BY ${orderCol} ASC`, [data.eventId])
+      if (result.length > 0) {
+        const { columns, values } = result[0]
+        rows = values.map((row) => Object.fromEntries(columns.map((col, i) => [col, row[i]])))
+      }
+    } else {
+      // OR logic: photos that have ANY of the selected tags
+      const placeholders = data.tagIds.map(() => '?').join(',')
+      const sql = `
+        SELECT DISTINCT p.* FROM photos p
+        INNER JOIN photo_tags pt ON pt.photo_id = p.id
+        WHERE p.event_id = ? AND p.deleted_at IS NULL
+          AND pt.tag_id IN (${placeholders})
+        ORDER BY p.${orderCol} ASC
+      `
+      const result = db.exec(sql, [data.eventId, ...data.tagIds])
+      if (result.length > 0) {
+        const { columns, values } = result[0]
+        rows = values.map((row) => Object.fromEntries(columns.map((col, i) => [col, row[i]])))
+      }
+    }
+
+    const photos = rows.map(deserializePhoto)
+    const { attachVersionSummary } = await import('./photo.handler')
+    attachVersionSummary(db, photos)
+    return photos
+  })
+
   ipcMain.handle('photos:listByTags', async (_event, data: { eventId: string; tagIds: string[]; sortBy?: string }): Promise<Photo[]> => {
     const db = getDb()
     let rows: Record<string, unknown>[] = []

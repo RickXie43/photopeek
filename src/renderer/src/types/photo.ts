@@ -107,3 +107,50 @@ export interface AppSettings {
   inspectorVisible: boolean
   language: string
 }
+
+// ─── Export types ───
+
+export type TagFilterMode = 'union' | 'intersection'
+export type VersionFilterMode = 'all' | 'selected-only' | 'original-only'
+export type OverwriteMode = 'skip' | 'replace'
+
+export interface VersionFilter {
+  mode: VersionFilterMode
+  selectedVersionNames: string[]
+}
+
+export interface TagFilter {
+  mode: TagFilterMode
+  includeTagIds: string[]
+  excludeTagIds: string[]
+}
+
+export interface ExportOptions {
+  eventId: string
+  destinationFolder: string
+  versionFilter: VersionFilter
+  tagFilter: TagFilter | null
+  organizeTemplate: string
+  overwriteMode: OverwriteMode
+}
+
+export interface ExportProgress {
+  current: number
+  total: number
+  message: string
+  percent: number
+}
+
+export interface ExportResult {
+  success: boolean
+  exported: number
+  skipped: number
+  errors: string[]
+  errorDetails?: string[]
+}
+
+export interface ExportPreset {
+  id: string
+  name: string
+  options: Omit<ExportOptions, 'eventId' | 'destinationFolder'>
+}
