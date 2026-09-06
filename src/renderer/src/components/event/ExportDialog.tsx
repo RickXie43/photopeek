@@ -182,14 +182,19 @@ export function ExportDialog({
   }, [])
 
   // ── Version toggle ──
-  const toggleVersion = useCallback((name: string): void => {
-    setSelectedVersionNames((prev) => {
-      const next = new Set(prev)
+  // Selecting specific versions must restrict the export to ONLY those versions.
+  // Otherwise the filter mode stays "all" and the RAW original gets exported too.
+  const toggleVersion = useCallback(
+    (name: string): void => {
+      const next = new Set(selectedVersionNames)
       if (next.has(name)) next.delete(name)
       else next.add(name)
-      return next
-    })
-  }, [])
+      setSelectedVersionNames(next)
+      // Keep the effective filter mode in sync with the chips selection
+      setVersionFilterMode(next.size > 0 ? 'selected-only' : 'all')
+    },
+    [selectedVersionNames]
+  )
 
   // ── Preset ──
   const loadPreset = useCallback((preset: ExportPreset): void => {
@@ -309,7 +314,9 @@ export function ExportDialog({
         eventId: selectedEventId,
         destinationFolder: resolvedDest,
         versionFilter: {
-          mode: versionFilterMode,
+          // Safety net: whenever specific versions are selected, export ONLY them
+          mode:
+            selectedVersionNames.size > 0 ? 'selected-only' : versionFilterMode,
           selectedVersionNames: Array.from(selectedVersionNames),
         },
         tagFilter,
@@ -435,7 +442,10 @@ export function ExportDialog({
             {selectedVersionNames.size > 0 && (
               <button
                 type="button"
-                onClick={() => setSelectedVersionNames(new Set())}
+                onClick={() => {
+                  setSelectedVersionNames(new Set())
+                  setVersionFilterMode('all')
+                }}
                 className="text-[10px] text-gray-400 hover:text-red-500 transition-colors"
               >
                 清除
