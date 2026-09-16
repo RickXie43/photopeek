@@ -140,11 +140,16 @@ function App(): React.JSX.Element {
   }, [refreshData])
 
   // Listen for background thumbnail repair completion → refresh photos
-  // Safe: only triggered by startup background task, NOT by photos:listByEvent
   useEffect(() => {
-    const unsub = window.electron.ipcRenderer.on('photos:thumbnails-repaired', () => {
-      refreshData()
-    })
+    const unsub = window.electron.ipcRenderer.on(
+      'photos:thumbnails-repaired',
+      (...args: unknown[]) => {
+        // Per-photo events retry the affected tile. Reload the full photo list
+        // only once after the repair pass, when database paths may have moved.
+        const [, , photoId] = args
+        if (!photoId) refreshData()
+      }
+    )
     return () => { unsub() }
   }, [refreshData])
 

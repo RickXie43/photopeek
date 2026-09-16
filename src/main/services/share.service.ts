@@ -21,7 +21,7 @@ if (app.isPackaged) {
     'node_modules',
     'cloudflared',
     'bin',
-    process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared',
+    process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'
   )
   if (fs.existsSync(unpackedBin)) {
     setCloudflaredBin(unpackedBin)
@@ -85,16 +85,16 @@ function broadcastUsers(session: ShareSession, data: unknown): void {
 
 /** Notify all renderer windows about user list change */
 function notifyRendererUsers(session: ShareSession): void {
-  const userList = Array.from(session.users.values()).map(u => ({
+  const userList = Array.from(session.users.values()).map((u) => ({
     id: u.id,
     nickname: u.nickname,
-    joinedAt: u.joinedAt,
+    joinedAt: u.joinedAt
   }))
   const wins = BrowserWindow.getAllWindows()
   for (const win of wins) {
     win.webContents.send('share:users-update', {
       eventId: session.eventId,
-      users: userList,
+      users: userList
     })
   }
 }
@@ -104,7 +104,7 @@ function notifyRendererVersionAdded(
   photoId: string,
   versionId: string,
   versionName: string,
-  uploadedBy: string,
+  uploadedBy: string
 ): void {
   const wins = BrowserWindow.getAllWindows()
   for (const win of wins) {
@@ -113,7 +113,7 @@ function notifyRendererVersionAdded(
       versionId,
       versionName,
       uploadedBy,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toISOString()
     })
   }
 }
@@ -131,7 +131,7 @@ function notifyRendererTagAction(
   nickname: string,
   action: 'added' | 'removed',
   photoId: string,
-  tagName: string,
+  tagName: string
 ): void {
   const wins = BrowserWindow.getAllWindows()
   for (const win of wins) {
@@ -142,7 +142,7 @@ function notifyRendererTagAction(
       action,
       photoId,
       tagName,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toISOString()
     })
   }
 }
@@ -152,9 +152,7 @@ function notifyRendererTagAction(
 function getWebAppHtml(port: number, hostname: string, useWss: boolean = false): string {
   // When accessed through a tunnel (Cloudflare, ngrok, etc.), the WS must connect
   // via wss:// on the same hostname — not ws://hostname:localPort.
-  const wsUrl = useWss
-    ? `wss://${hostname}`
-    : `ws://${hostname}:${port}`
+  const wsUrl = useWss ? `wss://${hostname}` : `ws://${hostname}:${port}`
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1548,7 +1546,10 @@ input,button,select{font-family:inherit}
 
 // ─── Server ────────────────────────────────────────────────────────────────
 
-export async function startShare(eventId: string, port: number = 0): Promise<{ port: number; ips: string[]; url: string }> {
+export async function startShare(
+  eventId: string,
+  port: number = 0
+): Promise<{ port: number; ips: string[]; url: string }> {
   // Stop existing session for this event
   stopShare(eventId)
 
@@ -1556,17 +1557,29 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
   const eventDir = getEventDir(folderName)
 
   const mimeTypes: Record<string, string> = {
-    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-    '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
-    '.json': 'application/json', '.html': 'text/html',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.json': 'application/json',
+    '.html': 'text/html',
     // RAW formats — most browsers can't render these, but we set correct MIME
-    '.raw': 'image/x-raw', '.cr2': 'image/x-canon-cr2', '.cr3': 'image/x-canon-cr3',
-    '.nef': 'image/x-nikon-nef', '.arw': 'image/x-sony-arw',
-    '.rw2': 'image/x-panasonic-rw2', '.orf': 'image/x-olympus-orf',
-    '.raf': 'image/x-fuji-raf', '.dng': 'image/x-adobe-dng',
-    '.tiff': 'image/tiff', '.tif': 'image/tiff',
-    '.heic': 'image/heic', '.heif': 'image/heif',
-    '.avif': 'image/avif',
+    '.raw': 'image/x-raw',
+    '.cr2': 'image/x-canon-cr2',
+    '.cr3': 'image/x-canon-cr3',
+    '.nef': 'image/x-nikon-nef',
+    '.arw': 'image/x-sony-arw',
+    '.rw2': 'image/x-panasonic-rw2',
+    '.orf': 'image/x-olympus-orf',
+    '.raf': 'image/x-fuji-raf',
+    '.dng': 'image/x-adobe-dng',
+    '.tiff': 'image/tiff',
+    '.tif': 'image/tiff',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
+    '.avif': 'image/avif'
   }
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -1595,7 +1608,10 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       if (versionId) {
         try {
           const db = getDb()
-          const rows = db.exec('SELECT thumbnail_path, file_path FROM photo_versions WHERE id = ?', [versionId])
+          const rows = db.exec(
+            'SELECT thumbnail_path, file_path FROM photo_versions WHERE id = ?',
+            [versionId]
+          )
           if (rows.length > 0 && rows[0].values.length > 0) {
             let thumbPath = rows[0].values[0][0] as string | null
             if (!thumbPath) {
@@ -1605,7 +1621,10 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
                 try {
                   thumbPath = await generateThumbnail(filePath, versionId, eventId, folderName)
                   if (thumbPath) {
-                    db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, versionId])
+                    db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [
+                      thumbPath,
+                      versionId
+                    ])
                   }
                 } catch {}
               }
@@ -1631,11 +1650,14 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       try {
         const db = getDb()
         // First try: find a version where thumbnail exists
-        const vRows = db.exec(`
+        const vRows = db.exec(
+          `
           SELECT v.thumbnail_path, v.file_path FROM photo_versions v
           WHERE v.photo_id = ? AND v.thumbnail_path IS NOT NULL AND v.thumbnail_path != ''
           ORDER BY v.is_original DESC LIMIT 1
-        `, [photoId])
+        `,
+          [photoId]
+        )
         if (vRows.length > 0 && vRows[0].values.length > 0) {
           const thumbPath = vRows[0].values[0][0] as string | null
           if (thumbPath && fs.existsSync(thumbPath)) {
@@ -1716,7 +1738,12 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
             res.end(buf)
             return
           }
-          console.warn('[Share] generateMedium returned null for', photoId, 'targetPath:', targetPath)
+          console.warn(
+            '[Share] generateMedium returned null for',
+            photoId,
+            'targetPath:',
+            targetPath
+          )
         } catch (err) {
           console.error('[Share] Medium generation failed:', err)
         }
@@ -1743,11 +1770,26 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
 
       async function serveFile(filePath: string): Promise<boolean> {
         const ext = path.extname(filePath).toLowerCase()
-        const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.arw','.rw2','.orf','.raf','.dng','.raw','.srf','.sr2'])
+        const RAW_EXTS = new Set([
+          '.cr2',
+          '.cr3',
+          '.nef',
+          '.arw',
+          '.rw2',
+          '.orf',
+          '.raf',
+          '.dng',
+          '.raw',
+          '.srf',
+          '.sr2'
+        ])
         if (RAW_EXTS.has(ext)) {
           const preview = await getRawPreviewBuffer(filePath)
           if (preview) {
-            res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(preview.length) })
+            res.writeHead(200, {
+              'Content-Type': 'image/jpeg',
+              'Content-Length': String(preview.length)
+            })
             res.end(preview)
             return true
           }
@@ -1757,7 +1799,7 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
           const buf = fs.readFileSync(filePath)
           res.writeHead(200, {
             'Content-Type': mimeTypes[ext] || 'image/jpeg',
-            'Content-Length': String(buf.length),
+            'Content-Length': String(buf.length)
           })
           res.end(buf)
           return true
@@ -1769,10 +1811,12 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       if (versionId && fs.existsSync(metaPath)) {
         try {
           const db = getDb()
-          const vRows = db.exec('SELECT file_path, file_name FROM photo_versions WHERE id = ?', [versionId])
+          const vRows = db.exec('SELECT file_path, file_name FROM photo_versions WHERE id = ?', [
+            versionId
+          ])
           if (vRows.length > 0 && vRows[0].values.length > 0) {
             const vFilePath = vRows[0].values[0][0] as string
-            if (vFilePath && fs.existsSync(vFilePath) && await serveFile(vFilePath)) return
+            if (vFilePath && fs.existsSync(vFilePath) && (await serveFile(vFilePath))) return
           }
         } catch {}
       }
@@ -1783,7 +1827,7 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
           const photoInfo = meta.photos?.[photoId]
           if (photoInfo?.fileName) {
             const found = findFileInDir(eventDir, photoInfo.fileName)
-            if (found && await serveFile(found)) return
+            if (found && (await serveFile(found))) return
           }
         } catch {}
       }
@@ -1813,7 +1857,11 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         // Simple multipart/form-data parser (no external deps)
         const contentType = req.headers['content-type'] || ''
         const boundary = contentType.match(/boundary=(.+)/)?.[1]
-        if (!boundary) { res.writeHead(400); res.end('No boundary'); return }
+        if (!boundary) {
+          res.writeHead(400)
+          res.end('No boundary')
+          return
+        }
 
         // Parse file and versionName from multipart
         let fileData: Buffer | null = null
@@ -1844,13 +1892,21 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
           }
         }
 
-        if (!fileData) { res.writeHead(400); res.end('No file'); return }
+        if (!fileData) {
+          res.writeHead(400)
+          res.end('No file')
+          return
+        }
 
         // Look up photo info
         const metaPath = path.join(eventDir, 'event.json')
         const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
         const photoInfo = meta.photos?.[photoId]
-        if (!photoInfo) { res.writeHead(404); res.end('Photo not found'); return }
+        if (!photoInfo) {
+          res.writeHead(404)
+          res.end('Photo not found')
+          return
+        }
 
         // Determine destination filename
         const originalBase = path.parse(photoInfo.fileName || 'photo').name
@@ -1875,7 +1931,9 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         const eventRows = db.exec('SELECT event_id FROM photos WHERE id = ?', [photoId])
         if (eventRows.length === 0 || eventRows[0].values.length === 0) {
           fs.unlinkSync(destPath)
-          res.writeHead(404); res.end('Photo not found in DB'); return
+          res.writeHead(404)
+          res.end('Photo not found in DB')
+          return
         }
         const dbEventId = eventRows[0].values[0][0] as string
 
@@ -1887,14 +1945,29 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         db.run(
           `INSERT INTO photo_versions (id, photo_id, version_name, file_path, file_name, file_size, width, height, is_original, uploaded_by, uploaded_at, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-          [versionId, photoId, versionName, destPath, destName, stats.size, 0, 0, uploadedBy, now, now],
+          [
+            versionId,
+            photoId,
+            versionName,
+            destPath,
+            destName,
+            stats.size,
+            0,
+            0,
+            uploadedBy,
+            now,
+            now
+          ]
         )
 
         // Generate thumbnail for new version
         try {
           const thumbPath = await generateThumbnail(destPath, versionId, dbEventId, folderName)
           if (thumbPath) {
-            db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [thumbPath, versionId])
+            db.run('UPDATE photo_versions SET thumbnail_path = ? WHERE id = ?', [
+              thumbPath,
+              versionId
+            ])
           }
         } catch {}
 
@@ -1920,14 +1993,32 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
         const session = sessions.get(eventId)
         if (session) {
           for (const [, user] of session.users) {
-            wsSend(user.ws, { type: 'versionAdded', data: { photoId, version: { id: versionId, versionName, fileName: destName, fileSize: stats.size, uploadedBy, createdAt: now } } })
+            wsSend(user.ws, {
+              type: 'versionAdded',
+              data: {
+                photoId,
+                version: {
+                  id: versionId,
+                  versionName,
+                  fileName: destName,
+                  fileSize: stats.size,
+                  uploadedBy,
+                  createdAt: now
+                }
+              }
+            })
           }
         }
         // Notify desktop renderer to refresh photo list (updates version badges)
         notifyRendererVersionAdded(photoId, versionId, versionName, uploadedBy || '')
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ success: true, version: { id: versionId, versionName, fileName: destName } }))
+        res.end(
+          JSON.stringify({
+            success: true,
+            version: { id: versionId, versionName, fileName: destName }
+          })
+        )
       } catch (err) {
         console.error('[Share] Upload failed:', err)
         res.writeHead(500)
@@ -1941,18 +2032,31 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
       const versionId = url.pathname.slice('/delete-version/'.length)
       try {
         const db = getDb()
-        const vRows = db.exec('SELECT photo_id, file_path, thumbnail_path, is_original FROM photo_versions WHERE id = ?', [versionId])
+        const vRows = db.exec(
+          'SELECT photo_id, file_path, thumbnail_path, is_original FROM photo_versions WHERE id = ?',
+          [versionId]
+        )
         if (vRows.length === 0 || vRows[0].values.length === 0) {
-          res.writeHead(404); res.end(JSON.stringify({ success: false, error: 'Version not found' })); return
+          res.writeHead(404)
+          res.end(JSON.stringify({ success: false, error: 'Version not found' }))
+          return
         }
         const [vPhotoId, vFilePath, vThumbPath, vIsOriginal] = vRows[0].values[0]
         if (vIsOriginal === 1) {
-          res.writeHead(400); res.end(JSON.stringify({ success: false, error: 'Cannot delete original version' })); return
+          res.writeHead(400)
+          res.end(JSON.stringify({ success: false, error: 'Cannot delete original version' }))
+          return
         }
 
         // Delete files
-        if (vFilePath && fs.existsSync(vFilePath as string)) try { fs.unlinkSync(vFilePath as string) } catch {}
-        if (vThumbPath && fs.existsSync(vThumbPath as string)) try { fs.unlinkSync(vThumbPath as string) } catch {}
+        if (vFilePath && fs.existsSync(vFilePath as string))
+          try {
+            fs.unlinkSync(vFilePath as string)
+          } catch {}
+        if (vThumbPath && fs.existsSync(vThumbPath as string))
+          try {
+            fs.unlinkSync(vThumbPath as string)
+          } catch {}
 
         db.run('DELETE FROM photo_versions WHERE id = ?', [versionId])
 
@@ -1988,11 +2092,15 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     // ── API: download ZIP of all photos ──────────────────────────────
     if (url.pathname === '/download-zip') {
       const metaPath = path.join(eventDir, 'event.json')
-      if (!fs.existsSync(metaPath)) { res.writeHead(404); res.end(''); return }
+      if (!fs.existsSync(metaPath)) {
+        res.writeHead(404)
+        res.end('')
+        return
+      }
 
       try {
         const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
-        const photoIds = Object.keys(meta.photos || {}).filter(id => !meta.photos[id].deletedAt)
+        const photoIds = Object.keys(meta.photos || {}).filter((id) => !meta.photos[id].deletedAt)
         const files: { name: string; data: Buffer }[] = []
 
         for (const id of photoIds) {
@@ -2008,14 +2116,18 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
           }
         }
 
-        if (files.length === 0) { res.writeHead(404); res.end('No files found'); return }
+        if (files.length === 0) {
+          res.writeHead(404)
+          res.end('No files found')
+          return
+        }
 
         const zipBuf = makeZip(files)
         const disposition = `attachment; filename="photopeek.zip"`
         res.writeHead(200, {
           'Content-Type': 'application/zip',
           'Content-Disposition': disposition,
-          'Content-Length': String(zipBuf.length),
+          'Content-Length': String(zipBuf.length)
         })
         res.end(zipBuf)
       } catch (err) {
@@ -2052,13 +2164,18 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
 
   wss.on('connection', (ws: WebSocket) => {
     const session = sessions.get(eventId)
-    if (!session) { ws.close(1011, 'Session ended'); return }
+    if (!session) {
+      ws.close(1011, 'Session ended')
+      return
+    }
 
     ws.on('message', (data: Buffer) => {
       try {
         const msg = JSON.parse(data.toString())
         handleWsMessage(session, eventId, eventDir, ws, msg)
-      } catch { /* ignore malformed messages */ }
+      } catch {
+        /* ignore malformed messages */
+      }
     })
 
     ws.on('close', () => {
@@ -2070,7 +2187,11 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
           // Notify remaining users
           broadcastUsers(session, {
             type: 'users',
-            users: Array.from(session.users.values()).map(u => ({ id: u.id, nickname: u.nickname, joinedAt: u.joinedAt })),
+            users: Array.from(session.users.values()).map((u) => ({
+              id: u.id,
+              nickname: u.nickname,
+              joinedAt: u.joinedAt
+            }))
           })
           break
         }
@@ -2094,7 +2215,7 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     name: `PhotoPeek-${folderName}`,
     type: 'photopeek',
     port: actualPort,
-    txt: { eventId },
+    txt: { eventId }
   })
 
   sessions.set(eventId, {
@@ -2103,12 +2224,16 @@ export async function startShare(eventId: string, port: number = 0): Promise<{ p
     server,
     wss,
     users: new Map(),
-    bonjour,
+    bonjour
   })
 
   console.log(`[Share] Started sharing event ${eventId} (${folderName}) on port ${actualPort}`)
 
-  return { port: actualPort, ips: getLocalIPs(), url: `http://${getLocalIPs()[0] || 'localhost'}:${actualPort}` }
+  return {
+    port: actualPort,
+    ips: getLocalIPs(),
+    url: `http://${getLocalIPs()[0] || 'localhost'}:${actualPort}`
+  }
 }
 
 export function stopShare(eventId: string): void {
@@ -2121,9 +2246,16 @@ export function stopShare(eventId: string): void {
   // Notify all web users that sharing stopped
   broadcastUsers(session, { type: 'shutdown', reason: 'Host stopped sharing' })
 
-  try { session.wss.close() } catch {}
-  try { session.server.close() } catch {}
-  if (session.bonjour) try { session.bonjour.destroy() } catch {}
+  try {
+    session.wss.close()
+  } catch {}
+  try {
+    session.server.close()
+  } catch {}
+  if (session.bonjour)
+    try {
+      session.bonjour.destroy()
+    } catch {}
   sessions.delete(eventId)
 
   // Notify renderer
@@ -2141,6 +2273,10 @@ export function stopAllShares(): void {
   }
 }
 
+export function hasActiveShares(): boolean {
+  return sessions.size > 0
+}
+
 export function getShareStatus(eventId: string): {
   active: boolean
   port?: number
@@ -2151,10 +2287,10 @@ export function getShareStatus(eventId: string): {
 } {
   const session = sessions.get(eventId)
   if (!session) return { active: false }
-  const userList = Array.from(session.users.values()).map(u => ({
+  const userList = Array.from(session.users.values()).map((u) => ({
     id: u.id,
     nickname: u.nickname,
-    joinedAt: u.joinedAt,
+    joinedAt: u.joinedAt
   }))
   const tunnelInfo = tunnels.get(eventId)
   return {
@@ -2163,7 +2299,7 @@ export function getShareStatus(eventId: string): {
     ips: getLocalIPs(),
     url: `http://${getLocalIPs()[0] || 'localhost'}:${session.port}`,
     users: userList,
-    tunnel: tunnelInfo ? { active: true, url: tunnelInfo.url } : { active: false },
+    tunnel: tunnelInfo ? { active: true, url: tunnelInfo.url } : { active: false }
   }
 }
 
@@ -2171,7 +2307,7 @@ export function getShareStatus(eventId: string): {
 
 function notifyRendererTunnelStatus(
   eventId: string,
-  extra?: { status?: string; statusText?: string },
+  extra?: { status?: string; statusText?: string }
 ): void {
   const tunnelInfo = tunnels.get(eventId)
   const wins = BrowserWindow.getAllWindows()
@@ -2181,7 +2317,7 @@ function notifyRendererTunnelStatus(
       active: !!tunnelInfo,
       url: tunnelInfo?.url,
       status: extra?.status || (tunnelInfo ? 'connected' : 'inactive'),
-      statusText: extra?.statusText || '',
+      statusText: extra?.statusText || ''
     })
   }
 }
@@ -2202,7 +2338,9 @@ function createTunnelInstance(eventId: string, port: number): Tunnel {
     }
     notifyRendererTunnelStatus(eventId, { status: 'connected', statusText: url })
     tunnel.emit('verified' as any, url)
-    console.log(`[Share] Tunnel ${info.reconnectAttempts > 0 ? 're' : ''}connected for ${eventId}: ${url}`)
+    console.log(
+      `[Share] Tunnel ${info.reconnectAttempts > 0 ? 're' : ''}connected for ${eventId}: ${url}`
+    )
   })
 
   tunnel.on('error', (err: Error) => {
@@ -2221,11 +2359,15 @@ function createTunnelInstance(eventId: string, port: number): Tunnel {
       const attempt = info.reconnectAttempts
       notifyRendererTunnelStatus(eventId, {
         status: 'reconnecting',
-        statusText: `连接断开，正在重连 (${attempt}/${MAX_TUNNEL_RECONNECTS})...`,
+        statusText: `连接断开，正在重连 (${attempt}/${MAX_TUNNEL_RECONNECTS})...`
       })
-      console.log(`[Share] Tunnel reconnect attempt ${attempt}/${MAX_TUNNEL_RECONNECTS} for ${eventId}`)
+      console.log(
+        `[Share] Tunnel reconnect attempt ${attempt}/${MAX_TUNNEL_RECONNECTS} for ${eventId}`
+      )
       // Clean up old tunnel and create new one
-      try { tunnel.stop() } catch {}
+      try {
+        tunnel.stop()
+      } catch {}
       // Exponential backoff: 2s, 4s, 8s
       const delay = 2000 * Math.pow(2, attempt - 1)
       setTimeout(() => createTunnelInstance(eventId, port), delay)
@@ -2235,9 +2377,7 @@ function createTunnelInstance(eventId: string, port: number): Tunnel {
       if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
       notifyRendererTunnelStatus(eventId, {
         status: 'failed',
-        statusText: code === 0
-          ? '隧道已关闭'
-          : `连接失败（已重试 ${info.reconnectAttempts} 次）`,
+        statusText: code === 0 ? '隧道已关闭' : `连接失败（已重试 ${info.reconnectAttempts} 次）`
       })
       console.log(`[Share] Tunnel gave up for ${eventId} (code: ${code})`)
     }
@@ -2284,7 +2424,9 @@ export async function startTunnel(eventId: string): Promise<{ url: string }> {
     const timeout = setTimeout(() => {
       if (settled) return
       settled = true
-      try { tunnel.stop() } catch {}
+      try {
+        tunnel.stop()
+      } catch {}
       const info = tunnels.get(eventId)
       if (info) {
         if (info.healthCheckInterval) clearInterval(info.healthCheckInterval)
@@ -2309,7 +2451,10 @@ export async function startTunnel(eventId: string): Promise<{ url: string }> {
       clearTimeout(timeout)
       const info = tunnels.get(eventId)
       if (!info || info.reconnectAttempts === 0) {
-        notifyRendererTunnelStatus(eventId, { status: 'failed', statusText: `连接失败 (code: ${code})` })
+        notifyRendererTunnelStatus(eventId, {
+          status: 'failed',
+          statusText: `连接失败 (code: ${code})`
+        })
         reject(new Error(`cloudflared 进程退出 (code: ${code})`))
       }
     })
@@ -2343,7 +2488,7 @@ function handleWsMessage(
   eventId: string,
   eventDir: string,
   ws: WebSocket,
-  msg: any,
+  msg: any
 ): void {
   switch (msg.type) {
     case 'join': {
@@ -2368,7 +2513,7 @@ function handleWsMessage(
         id: userId,
         nickname,
         joinedAt: new Date().toISOString(),
-        ws,
+        ws
       })
 
       // Welcome the new user
@@ -2379,15 +2524,15 @@ function handleWsMessage(
       if (fs.existsSync(metaPath)) {
         wsSend(ws, {
           type: 'sync',
-          payload: JSON.parse(fs.readFileSync(metaPath, 'utf-8')),
+          payload: JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
         })
       }
 
       // Broadcast updated user list to all
-      const userList = Array.from(session.users.values()).map(u => ({
+      const userList = Array.from(session.users.values()).map((u) => ({
         id: u.id,
         nickname: u.nickname,
-        joinedAt: u.joinedAt,
+        joinedAt: u.joinedAt
       }))
       broadcastUsers(session, { type: 'users', users: userList })
 
@@ -2403,10 +2548,10 @@ function handleWsMessage(
           break
         }
       }
-      const userList = Array.from(session.users.values()).map(u => ({
+      const userList = Array.from(session.users.values()).map((u) => ({
         id: u.id,
         nickname: u.nickname,
-        joinedAt: u.joinedAt,
+        joinedAt: u.joinedAt
       }))
       broadcastUsers(session, { type: 'users', users: userList })
       notifyRendererUsers(session)
@@ -2427,7 +2572,10 @@ function handleWsMessage(
       if (!photoId) break
 
       const db = getDb()
-      const existingTag = db.exec('SELECT id, name, color FROM tags WHERE event_id = ? AND name = ?', [eventId, nickname])
+      const existingTag = db.exec(
+        'SELECT id, name, color FROM tags WHERE event_id = ? AND name = ?',
+        [eventId, nickname]
+      )
       let tagId: string
 
       if (existingTag.length > 0 && existingTag[0].values.length > 0) {
@@ -2437,18 +2585,26 @@ function handleWsMessage(
         tagId = uuid()
         const color = nicknameTagColor(nickname)
         const now = new Date().toISOString()
-        db.run('INSERT OR IGNORE INTO tags (id, event_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-          [tagId, eventId, nickname, color, now])
+        db.run(
+          'INSERT OR IGNORE INTO tags (id, event_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+          [tagId, eventId, nickname, color, now]
+        )
       }
 
       // Toggle the tag on the photo
-      const existing = db.exec('SELECT 1 FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [photoId, tagId])
+      const existing = db.exec('SELECT 1 FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [
+        photoId,
+        tagId
+      ])
       const has = existing.length > 0 && existing[0].values.length > 0
 
       if (has) {
         db.run('DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [photoId, tagId])
       } else {
-        db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [photoId, tagId])
+        db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [
+          photoId,
+          tagId
+        ])
       }
 
       // Sync event.json
@@ -2470,7 +2626,7 @@ function handleWsMessage(
         nickname,
         action,
         photoId,
-        tagName: nickname,
+        tagName: nickname
       })
       break
     }
@@ -2516,7 +2672,7 @@ function handleWsMessage(
         nickname,
         action,
         photoId: msg.photoId,
-        tagName,
+        tagName
       })
       break
     }
@@ -2594,18 +2750,29 @@ function applyRemoteAction(eventId: string, msg: any): void {
   try {
     switch (msg.type) {
       case 'tagToggle': {
-        const existing = db.exec('SELECT 1 FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [msg.photoId, msg.tagId])
+        const existing = db.exec('SELECT 1 FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [
+          msg.photoId,
+          msg.tagId
+        ])
         const has = existing.length > 0 && existing[0].values.length > 0
         if (has) {
-          db.run('DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [msg.photoId, msg.tagId])
+          db.run('DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [
+            msg.photoId,
+            msg.tagId
+          ])
         } else {
-          db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [msg.photoId, msg.tagId])
+          db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [
+            msg.photoId,
+            msg.tagId
+          ])
         }
         break
       }
       case 'tagAdd': {
-        db.run('INSERT OR IGNORE INTO tags (id, event_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-          [msg.tag.id, eventId, msg.tag.name, msg.tag.color, now])
+        db.run(
+          'INSERT OR IGNORE INTO tags (id, event_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+          [msg.tag.id, eventId, msg.tag.name, msg.tag.color, now]
+        )
         break
       }
       case 'tagRemove': {
@@ -2622,24 +2789,24 @@ function applyRemoteAction(eventId: string, msg: any): void {
 // ─── Simple ZIP generator (no external deps) ──────────────────────────────
 
 function crc32(buf: Buffer): number {
-  let crc = 0xFFFFFFFF
+  let crc = 0xffffffff
   const table = new Int32Array(256)
   for (let i = 0; i < 256; i++) {
     let c = i
     for (let j = 0; j < 8; j++) {
-      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
     }
     table[i] = c
   }
   for (let i = 0; i < buf.length; i++) {
-    crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8)
+    crc = table[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)
   }
-  return (crc ^ 0xFFFFFFFF) >>> 0
+  return (crc ^ 0xffffffff) >>> 0
 }
 
 function writeLE(buf: Buffer, offset: number, value: number, bytes: number): void {
   for (let i = 0; i < bytes; i++) {
-    buf[offset + i] = (value >> (i * 8)) & 0xFF
+    buf[offset + i] = (value >> (i * 8)) & 0xff
   }
 }
 
@@ -2658,7 +2825,7 @@ function makeZip(files: { name: string; data: Buffer }[]): Buffer {
     writeLE(local, 0, 0x04034b50, 4)
     writeLE(local, 4, 20, 2)
     writeLE(local, 6, 0, 2)
-    writeLE(local, 8, 0, 2)             // stored (no compression)
+    writeLE(local, 8, 0, 2) // stored (no compression)
     writeLE(local, 10, 0, 2)
     writeLE(local, 12, 0, 2)
     writeLE(local, 14, crc, 4)

@@ -4,11 +4,11 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { spawn } from 'child_process'
 
-const GITHUB_REPO = 'Rick/PhotoPeek'
+const GITHUB_REPO = 'RickXie43/photopeek'
 const GITEE_OWNER = 'RickXie43'
 const GITEE_REPO = 'photopeek'
 const GITEE_VERSION_URL = `https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/raw/master/version.json`
-const CURRENT_VERSION = 'v2.0.0'
+const CURRENT_VERSION = `v${app.getVersion()}`
 
 export interface CheckUpdateResult {
   latestVersion: string
@@ -41,12 +41,7 @@ function fetchJson(url: string, maxRedirects = 3): Promise<any> {
     }
     const req = https.get(url, { headers: { 'User-Agent': 'PhotoPeek' } }, (res) => {
       // Follow redirects (e.g. Gitee raw -> CDN)
-      if (
-        res.statusCode &&
-        res.statusCode >= 300 &&
-        res.statusCode < 400 &&
-        res.headers.location
-      ) {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume() // drain response
         resolve(fetchJson(res.headers.location, maxRedirects - 1))
         return
@@ -130,7 +125,7 @@ export function registerUpdateHandlers(): void {
       return {
         latestVersion,
         downloadUrl,
-        hasUpdate: semverLt(CURRENT_VERSION, latestVersion),
+        hasUpdate: semverLt(CURRENT_VERSION, latestVersion)
       }
     } catch (e) {
       errors.push(`Gitee: ${(e as Error).message}`)
@@ -138,21 +133,16 @@ export function registerUpdateHandlers(): void {
 
     // 2. Fallback: GitHub API
     try {
-      const release = await fetchJson(
-        `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
-      )
+      const release = await fetchJson(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
       const latestVersion: string = release.tag_name || ''
-      const hasUpdate = latestVersion
-        ? semverLt(CURRENT_VERSION, latestVersion)
-        : false
+      const hasUpdate = latestVersion ? semverLt(CURRENT_VERSION, latestVersion) : false
 
-      // Find the setup exe asset
-      const assets: Array<{ name: string; browser_download_url: string }> =
-        release.assets || []
-      const setupAsset = assets.find(
-        (a) => a.name.endsWith('-setup.exe') && !a.name.endsWith('.exe.blockmap')
-      )
-      const downloadUrl = setupAsset?.browser_download_url || ''
+      // Find the Windows ZIP asset. NSIS setup executables are intentionally
+      // no longer published because their legacy decompressor is unreliable
+      // for this application size.
+      const assets: Array<{ name: string; browser_download_url: string }> = release.assets || []
+      const zipAsset = assets.find((a) => /-win(?:-x64)?\.zip$/i.test(a.name))
+      const downloadUrl = zipAsset?.browser_download_url || ''
 
       return { latestVersion, downloadUrl, hasUpdate }
     } catch (e) {
@@ -166,7 +156,7 @@ export function registerUpdateHandlers(): void {
         return {
           latestVersion: version,
           downloadUrl: '',
-          hasUpdate: semverLt(CURRENT_VERSION, version),
+          hasUpdate: semverLt(CURRENT_VERSION, version)
         }
       }
     } catch (e) {
@@ -177,68 +167,74 @@ export function registerUpdateHandlers(): void {
       latestVersion: '',
       downloadUrl: '',
       hasUpdate: false,
-      error: `检查更新失败: ${errors.join('; ')}`,
+      error: `检查更新失败: ${errors.join('; ')}`
     }
   })
 
   /**
    * Download a file from url to destination path.
    */
-  ipcMain.handle(
-    'updates:openDownloadPage',
-    async (_event, downloadUrl: string): Promise<void> => {
-      const url =
-        downloadUrl ||
-        `https://github.com/${GITHUB_REPO}/releases/latest`
-      await shell.openExternal(url)
-    }
-  )
+  ipcMain.handle('updates:openDownloadPage', async (_event, downloadUrl: string): Promise<void> => {
+    const url = downloadUrl || `https://github.com/${GITHUB_REPO}/releases/latest`
+    await shell.openExternal(url)
+  })
 
   /**
-   * Download installer and perform silent install.
+   * Download the Windows ZIP and update the running application.
+   * Extraction is delegated to PowerShell/.NET's ZIP implementation, so this
+   * path never loads an NSIS decompression plugin.
    */
   ipcMain.handle(
     'updates:downloadAndInstall',
-    async (
-      _event,
-      downloadUrl: string
-    ): Promise<{ success: boolean; error?: string }> => {
+    async (_event, downloadUrl: string): Promise<{ success: boolean; error?: string }> => {
       try {
         const tempDir = app.getPath('temp')
-        const installerName = `photopeek-setup-${Date.now()}.exe`
-        const installerPath = path.join(tempDir, installerName)
+        if (!downloadUrl || !isZipUrl(downloadUrl)) {
+          return {
+            success: false,
+            error: '更新源未提供 Windows ZIP 包，请打开下载页面手动下载。'
+          }
+        }
 
-        // Download installer
-        await downloadFile(downloadUrl, installerPath)
+        const zipPath = path.join(tempDir, `photopeek-update-${Date.now()}.zip`)
 
-        // Create batch script to wait for app exit then run installer silently
-        const batPath = path.join(tempDir, `photopeek-update-${Date.now()}.bat`)
-        const batContent = [
-          '@echo off',
-          '',
-          ':wait',
-          'tasklist /FI "IMAGENAME eq photopeek.exe" 2^>NUL | find /I "photopeek.exe" >NUL',
-          'if %ERRORLEVEL% EQU 0 (',
-          '  timeout /T 1 /NOBREAK >NUL',
-          '  goto wait',
-          ')',
-          '',
-          `start /wait "" "${installerPath}" /S`,
-          `del "${installerPath}"`,
-          `del "%~f0"`,
+        // Download ZIP package
+        await downloadFile(downloadUrl, zipPath)
+
+        const updateScriptPath = path.join(tempDir, `photopeek-update-${Date.now()}.ps1`)
+        const installDir = path.dirname(app.getPath('exe'))
+        const psQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`
+        const updateScript = [
+          '$ErrorActionPreference = "Stop"',
+          `$zipPath = ${psQuote(zipPath)}`,
+          `$installDir = ${psQuote(installDir)}`,
+          `$exePath = ${psQuote(app.getPath('exe'))}`,
+          'while (Get-Process -Name "photopeek" -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 }',
+          '$staging = Join-Path ([IO.Path]::GetTempPath()) ("photopeek-update-" + [guid]::NewGuid().ToString("N"))',
+          'New-Item -ItemType Directory -Path $staging -Force | Out-Null',
+          'Expand-Archive -LiteralPath $zipPath -DestinationPath $staging -Force',
+          'New-Item -ItemType Directory -Path $installDir -Force | Out-Null',
+          'Get-ChildItem -LiteralPath $staging -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $installDir -Recurse -Force }',
+          'Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue',
+          'Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue',
+          'Start-Process -FilePath $exePath',
+          'Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue'
         ].join('\r\n')
-        fs.writeFileSync(batPath, batContent, 'utf-8')
+        fs.writeFileSync(updateScriptPath, updateScript, 'utf-8')
 
-        // Spawn batch script detached so it survives app exit
-        const child = spawn(batPath, [], {
-          detached: true,
-          stdio: 'ignore',
-          shell: true,
-          windowsHide: true,
-        })
+        // Spawn PowerShell detached so it survives app exit
+        const child = spawn(
+          'powershell.exe',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', updateScriptPath],
+          {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
+          }
+        )
         child.unref()
 
-        // Quit the app — the batch script will wait until we're fully gone
+        // Quit the app — the PowerShell script will wait until we're fully gone
         setImmediate(() => {
           app.exit()
         })
@@ -251,6 +247,14 @@ export function registerUpdateHandlers(): void {
   )
 }
 
+function isZipUrl(value: string): boolean {
+  try {
+    return new URL(value).pathname.toLowerCase().endsWith('.zip')
+  } catch {
+    return value.toLowerCase().split('?')[0].endsWith('.zip')
+  }
+}
+
 /**
  * Download a file from a URL to a local destination path.
  * Follows HTTP redirects (e.g. Gitee raw -> CDN).
@@ -260,12 +264,7 @@ function downloadFile(url: string, dest: string): Promise<void> {
     const file = fs.createWriteStream(dest)
     const req = https.get(url, { headers: { 'User-Agent': 'PhotoPeek' } }, (res) => {
       // Follow redirects
-      if (
-        res.statusCode &&
-        res.statusCode >= 300 &&
-        res.statusCode < 400 &&
-        res.headers.location
-      ) {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume()
         file.close()
         fs.unlink(dest, () => {})

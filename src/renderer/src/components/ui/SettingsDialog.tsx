@@ -12,7 +12,7 @@ interface SettingsData {
 
 export function SettingsDialog({
   open,
-  onClose,
+  onClose
 }: {
   open: boolean
   onClose: () => void
@@ -20,12 +20,14 @@ export function SettingsDialog({
   const [settings, setSettings] = useState<SettingsData>({
     libraryPath: '',
     language: 'zh-CN',
-    nickname: '',
+    nickname: ''
   })
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     if (open) {
+      setError('')
       loadSettings()
     }
   }, [open])
@@ -33,10 +35,12 @@ export function SettingsDialog({
   const loadSettings = async (): Promise<void> => {
     try {
       const config = (await window.electron.ipcRenderer.invoke('settings:get')) as SettingsData
-      const libPath = (await window.electron.ipcRenderer.invoke('settings:getLibraryPath')) as string
+      const libPath = (await window.electron.ipcRenderer.invoke(
+        'settings:getLibraryPath'
+      )) as string
       setSettings({
         ...config,
-        libraryPath: libPath,
+        libraryPath: libPath
       })
     } catch (err) {
       console.error('Failed to load settings:', err)
@@ -45,18 +49,17 @@ export function SettingsDialog({
 
   const handleSave = async (): Promise<void> => {
     setSaving(true)
+    setError('')
     try {
-      await window.electron.ipcRenderer.invoke('settings:update', {
-        language: settings.language,
-      })
-      if (settings.libraryPath) {
-        await window.electron.ipcRenderer.invoke('settings:setLibraryPath', settings.libraryPath)
-      }
-      if (settings.nickname) {
-        await window.electron.ipcRenderer.invoke('settings:update', { nickname: settings.nickname } as any)
-      }
+      if (!settings.libraryPath.trim()) throw new Error('请选择照片库目录')
+      const previousPath = await window.electron.ipcRenderer.invoke('settings:getLibraryPath')
+      await window.electron.ipcRenderer.invoke('settings:update', settings)
       onClose()
+      // Remount the renderer to discard old selections, requests and image caches.
+      // The main process and newly opened database remain running.
+      if (previousPath !== settings.libraryPath) window.location.reload()
     } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败，请检查目录权限')
       console.error('Failed to save settings:', err)
     } finally {
       setSaving(false)
@@ -75,7 +78,14 @@ export function SettingsDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title="设置" className="max-w-lg">
+    <Dialog
+      open={open}
+      onClose={() => {
+        if (!saving) onClose()
+      }}
+      title="设置"
+      className="max-w-lg"
+    >
       <div className="space-y-6">
         {/* Library Path */}
         <section>
@@ -95,7 +105,7 @@ export function SettingsDialog({
             </Button>
           </div>
           <div className="text-xs text-gray-400 mt-1">
-            照片将复制到此目录中的 events/ 文件夹下
+            保存后立即加载此目录中的照片库，无需重启；空目录将创建新库，原照片库保留。
           </div>
         </section>
 
@@ -114,9 +124,7 @@ export function SettingsDialog({
             placeholder="你的昵称（用作默认标签名）"
             className="w-full px-3 py-1.5 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
           />
-          <div className="text-xs text-gray-400 mt-1">
-            在放大模式下按空格键使用此昵称作为标签
-          </div>
+          <div className="text-xs text-gray-400 mt-1">在放大模式下按空格键使用此昵称作为标签</div>
         </section>
 
         <div className="h-px bg-gray-200 dark:bg-gray-700" />
@@ -153,11 +161,18 @@ export function SettingsDialog({
         </section>
 
         <div className="flex justify-end gap-2 pt-2">
-          <Button variant="default" onClick={onClose}>取消</Button>
+          <Button variant="default" onClick={onClose} disabled={saving}>
+            取消
+          </Button>
           <Button variant="primary" onClick={handleSave} disabled={saving}>
             {saving ? '保存中...' : '保存'}
           </Button>
         </div>
+        {error && (
+          <p role="alert" className="text-sm text-red-500">
+            {error}
+          </p>
+        )}
       </div>
     </Dialog>
   )
@@ -171,10 +186,11 @@ function CacheClearAllButton(): React.JSX.Element {
   const handleClear = async (): Promise<void> => {
     const confirmed = await confirm({
       title: '清除所有数据',
-      message: '确定要清除所有数据和设置吗？\n\n这将删除：\n• 所有事件和照片数据\n• 所有缩略图和缓存\n• 已导入的照片文件\n• 所有设置\n\n清除后将重启软件，此操作不可撤销！',
+      message:
+        '确定要清除所有数据和设置吗？\n\n这将删除：\n• 所有事件和照片数据\n• 所有缩略图和缓存\n• 已导入的照片文件\n• 所有设置\n\n清除后将重启软件，此操作不可撤销！',
       confirmText: '清除并重启',
       cancelText: '取消',
-      variant: 'danger',
+      variant: 'danger'
     })
     if (!confirmed) return
 
@@ -183,9 +199,10 @@ function CacheClearAllButton(): React.JSX.Element {
     setMessage('')
 
     try {
-      const result = (await window.electron.ipcRenderer.invoke(
-        'cache:clear'
-      )) as { success: boolean; error?: string }
+      const result = (await window.electron.ipcRenderer.invoke('cache:clear')) as {
+        success: boolean
+        error?: string
+      }
 
       if (result.success) {
         setStatus('success')
@@ -227,12 +244,8 @@ function CacheClearAllButton(): React.JSX.Element {
           </>
         )}
       </Button>
-      {status === 'success' && (
-        <div className="text-xs text-green-600 mt-1">{message}</div>
-      )}
-      {status === 'error' && (
-        <div className="text-xs text-red-500 mt-1">{message}</div>
-      )}
+      {status === 'success' && <div className="text-xs text-green-600 mt-1">{message}</div>}
+      {status === 'error' && <div className="text-xs text-red-500 mt-1">{message}</div>}
     </div>
   )
 }
@@ -246,9 +259,7 @@ function UpdateChecker(): React.JSX.Element {
     setChecking(true)
     setResult(null)
     try {
-      const res = (await window.electron.ipcRenderer.invoke(
-        'updates:checkLatest'
-      )) as {
+      const res = (await window.electron.ipcRenderer.invoke('updates:checkLatest')) as {
         latestVersion: string
         downloadUrl: string
         hasUpdate: boolean
@@ -298,9 +309,7 @@ function UpdateChecker(): React.JSX.Element {
         {downloading ? '下载中...' : checking ? '检查中...' : '检查更新'}
       </button>
       {result && (
-        <div
-          className={`text-xs mt-1 ${result.isError ? 'text-red-400' : 'text-green-500'}`}
-        >
+        <div className={`text-xs mt-1 ${result.isError ? 'text-red-400' : 'text-green-500'}`}>
           {result.message}
         </div>
       )}

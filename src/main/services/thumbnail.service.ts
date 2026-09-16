@@ -56,7 +56,8 @@ export async function generateThumbnail(
   sourcePath: string,
   photoId: string,
   eventId: string,
-  folderName?: string
+  folderName?: string,
+  force = false
 ): Promise<string | null> {
   let tempHandle: { path: string; cleanup: () => void } | null = null
   try {
@@ -67,8 +68,9 @@ export async function generateThumbnail(
     const thumbName = `${photoId}.jpg`
     const thumbPath = path.join(dir, thumbName)
 
-    // Skip if thumbnail already exists
-    if (fs.existsSync(thumbPath)) return thumbPath
+    // Skip if thumbnail already exists unless the caller is repairing a
+    // corrupt/unreadable cache entry.
+    if (fs.existsSync(thumbPath) && !force) return thumbPath
 
     // Use ASCII-safe path for sharp (workaround for Unicode path issues on Windows)
     tempHandle = ensureAsciiPath(sourcePath)

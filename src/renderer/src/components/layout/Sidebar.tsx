@@ -196,8 +196,13 @@ export function Sidebar(): React.JSX.Element {
                 <>
                   <button
                     onClick={() => {
+                      const alreadySelected = selectedEventId === event.id
                       setSelectedEvent(event.id)
                       setShowingTrash(false)
+                      // Re-entering the current event should still run the
+                      // thumbnail repair pass (useful after copying a
+                      // portable database or deleting its cache manually).
+                      if (alreadySelected) window.dispatchEvent(new Event('refresh-photos'))
                     }}
                     className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
                   >

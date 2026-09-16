@@ -39,7 +39,6 @@ export function ConfirmDialog(): React.JSX.Element | null {
   const [open, setOpen] = useState(false)
   const [options, setOptions] = useState<ConfirmOptions | null>(null)
   const [loading, setLoading] = useState(false)
-  const overlayRef = useRef<HTMLDivElement>(null)
   const confirmBtnRef = useRef<HTMLButtonElement>(null)
 
   // Register the open handler so confirm() can trigger it
@@ -100,11 +99,7 @@ export function ConfirmDialog(): React.JSX.Element | null {
 
   return (
     <div
-      ref={overlayRef}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40"
-      onClick={(e) => {
-        if (e.target === overlayRef.current) handleCancel()
-      }}
       onKeyDown={handleKeyDown}
     >
       <div
@@ -116,9 +111,7 @@ export function ConfirmDialog(): React.JSX.Element | null {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-2">
-            {isDanger && (
-              <AlertTriangle size={18} className="text-red-500 shrink-0" />
-            )}
+            {isDanger && <AlertTriangle size={18} className="text-red-500 shrink-0" />}
             <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
               {options.title}
             </h2>

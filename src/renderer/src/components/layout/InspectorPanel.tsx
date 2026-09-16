@@ -20,11 +20,17 @@ export function InspectorPanel(): React.JSX.Element {
 
   // Load all tags for current event
   useEffect(() => {
-    if (!selectedEventId) { setEventTags([]); return }
+    if (!selectedEventId) {
+      setEventTags([])
+      return
+    }
     const loadTags = (): void => {
-      window.electron.ipcRenderer.invoke('tags:list', selectedEventId).then((r: unknown) => {
-        setEventTags(r as { id: string; name: string; color: string }[])
-      }).catch(() => setEventTags([]))
+      window.electron.ipcRenderer
+        .invoke('tags:list', selectedEventId)
+        .then((r: unknown) => {
+          setEventTags(r as { id: string; name: string; color: string }[])
+        })
+        .catch(() => setEventTags([]))
     }
     loadTags()
     window.addEventListener('refresh-tags', loadTags)
@@ -33,18 +39,28 @@ export function InspectorPanel(): React.JSX.Element {
 
   // Load version names for current event (for version filter)
   useEffect(() => {
-    if (!selectedEventId) { setEventVersionNames([]); return }
-    window.electron.ipcRenderer.invoke('photos:listVersionNames', selectedEventId)
+    if (!selectedEventId) {
+      setEventVersionNames([])
+      return
+    }
+    window.electron.ipcRenderer
+      .invoke('photos:listVersionNames', selectedEventId)
       .then((r: unknown) => setEventVersionNames(r as string[]))
       .catch(() => setEventVersionNames([]))
   }, [selectedEventId])
 
   // Load tags for selected photo
   useEffect(() => {
-    if (!selectedPhoto) { setPhotoTags([]); return }
-    window.electron.ipcRenderer.invoke('tags:listForPhoto', selectedPhoto.id).then((r: unknown) => {
-      setPhotoTags(r as { id: string; name: string; color: string }[])
-    }).catch(() => setPhotoTags([]))
+    if (!selectedPhoto) {
+      setPhotoTags([])
+      return
+    }
+    window.electron.ipcRenderer
+      .invoke('tags:listForPhoto', selectedPhoto.id)
+      .then((r: unknown) => {
+        setPhotoTags(r as { id: string; name: string; color: string }[])
+      })
+      .catch(() => setPhotoTags([]))
   }, [selectedPhoto?.id])
 
   // Filter photos when filterTagIds or filterVersionNames changes
@@ -60,28 +76,43 @@ export function InspectorPanel(): React.JSX.Element {
       // Both filters active: first filter by version, then intersect with tag filter
       const tagIds = Array.from(filterTagIds)
       const versionNames = Array.from(filterVersionNames)
-      promise = window.electron.ipcRenderer.invoke('photos:listByVersionNames', { eventId: selectedEventId, versionNames, sortBy })
+      promise = window.electron.ipcRenderer
+        .invoke('photos:listByVersionNames', { eventId: selectedEventId, versionNames, sortBy })
         .then(async (byVersion: any) => {
           const byVersionIds = new Set(byVersion.map((p: any) => p.id))
-          const byTag = await window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds, sortBy })
+          const byTag = (await window.electron.ipcRenderer.invoke('photos:listByTags', {
+            eventId: selectedEventId,
+            tagIds,
+            sortBy
+          })) as any[]
           return byTag.filter((p: any) => byVersionIds.has(p.id))
         })
     } else if (hasVersionFilter) {
-      promise = window.electron.ipcRenderer.invoke('photos:listByVersionNames', { eventId: selectedEventId, versionNames: Array.from(filterVersionNames), sortBy })
+      promise = window.electron.ipcRenderer.invoke('photos:listByVersionNames', {
+        eventId: selectedEventId,
+        versionNames: Array.from(filterVersionNames),
+        sortBy
+      })
     } else if (hasTagFilter) {
-      promise = window.electron.ipcRenderer.invoke('photos:listByTags', { eventId: selectedEventId, tagIds: Array.from(filterTagIds), sortBy })
+      promise = window.electron.ipcRenderer.invoke('photos:listByTags', {
+        eventId: selectedEventId,
+        tagIds: Array.from(filterTagIds),
+        sortBy
+      })
     } else {
       promise = window.electron.ipcRenderer.invoke('photos:listByEvent', selectedEventId, sortBy)
     }
 
-    promise.then((result: any) => {
-      setPhotos(result)
-      setLoading(false)
-    }).catch(() => setLoading(false))
+    promise
+      .then((result: any) => {
+        setPhotos(result)
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
   }, [filterTagIds, filterVersionNames, selectedEventId, sortBy])
 
   const toggleFilter = (tagId: string): void => {
-    setFilterTagIds(prev => {
+    setFilterTagIds((prev) => {
       const next = new Set(prev)
       if (next.has(tagId)) next.delete(tagId)
       else next.add(tagId)
@@ -94,19 +125,26 @@ export function InspectorPanel(): React.JSX.Element {
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!selectedPhoto) { setVersions([]); setSelectedVersionId(null); return }
-    window.electron.ipcRenderer.invoke('photos:listVersions', selectedPhoto.id)
+    if (!selectedPhoto) {
+      setVersions([])
+      setSelectedVersionId(null)
+      return
+    }
+    window.electron.ipcRenderer
+      .invoke('photos:listVersions', selectedPhoto.id)
       .then((r: unknown) => {
         const list = r as PhotoVersion[]
         setVersions(list)
         const orig = list.find((v: PhotoVersion) => v.isOriginal)
-        setSelectedVersionId(orig ? orig.id : (list[0]?.id || null))
+        setSelectedVersionId(orig ? orig.id : list[0]?.id || null)
       })
-      .catch(() => { setVersions([]) })
+      .catch(() => {
+        setVersions([])
+      })
   }, [selectedPhoto?.id])
 
   // Derive display data from selected version, falling back to photo
-  const activeVersion = versions.find(v => v.id === selectedVersionId)
+  const activeVersion = versions.find((v) => v.id === selectedVersionId)
   const displayFileName = activeVersion?.fileName || selectedPhoto?.fileName
   const displayFileSize = activeVersion?.fileSize || selectedPhoto?.fileSize || 0
   // Use version metadata dimensions when available (more reliable than stored width/height)
@@ -120,11 +158,14 @@ export function InspectorPanel(): React.JSX.Element {
   // Auto-refresh metadata for versions that have null metadata
   useEffect(() => {
     if (!activeVersion || activeVersion.metadata) return
-    window.electron.ipcRenderer.invoke('photos:refreshMetadata', selectedPhoto!.id, activeVersion.id)
+    window.electron.ipcRenderer
+      .invoke('photos:refreshMetadata', selectedPhoto!.id, activeVersion.id)
       .then((result: any) => {
         if (result.success) {
           // Update the version's metadata in state
-          setVersions(prev => prev.map(v => v.id === activeVersion.id ? { ...v, metadata: result.metadata } : v))
+          setVersions((prev) =>
+            prev.map((v) => (v.id === activeVersion.id ? { ...v, metadata: result.metadata } : v))
+          )
         }
       })
       .catch(() => {})
@@ -147,7 +188,11 @@ export function InspectorPanel(): React.JSX.Element {
     if (!refreshing) return
     const doRefresh = async (): Promise<void> => {
       try {
-        const result = await window.electron.ipcRenderer.invoke('photos:refreshMetadata', selectedPhoto!.id, selectedVersionId) as { success: boolean; metadata: any; debug?: string }
+        const result = (await window.electron.ipcRenderer.invoke(
+          'photos:refreshMetadata',
+          selectedPhoto!.id,
+          selectedVersionId
+        )) as { success: boolean; metadata: any; debug?: string }
         if (result.success) {
           usePhotoStore.getState().updatePhoto(selectedPhoto!.id, { metadata: result.metadata })
         } else {
@@ -163,56 +208,76 @@ export function InspectorPanel(): React.JSX.Element {
   }, [refreshing])
 
   useEffect(() => {
-    if (!selectedPhoto) { setVersions([]); setSelectedVersionId(null); return }
-    window.electron.ipcRenderer.invoke('photos:listVersions', selectedPhoto.id)
+    if (!selectedPhoto) {
+      setVersions([])
+      setSelectedVersionId(null)
+      return
+    }
+    window.electron.ipcRenderer
+      .invoke('photos:listVersions', selectedPhoto.id)
       .then((r: unknown) => {
         const list = r as PhotoVersion[]
         setVersions(list)
         // Default: select original version or first
         const orig = list.find((v: PhotoVersion) => v.isOriginal)
-        setSelectedVersionId(orig ? orig.id : (list[0]?.id || null))
+        setSelectedVersionId(orig ? orig.id : list[0]?.id || null)
       })
-      .catch(() => { setVersions([]) })
+      .catch(() => {
+        setVersions([])
+      })
   }, [selectedPhoto?.id])
 
-  const infoItems = selectedPhoto ? [
-    { label: '文件名', value: displayFileName || selectedPhoto.fileName },
-    { label: '大小', value: formatFileSize(displayFileSize) },
-    { label: '分辨率', value: `${displayWidth} × ${displayHeight}` },
-    selectedPhoto.rating > 0 && { label: '评分', value: '★'.repeat(selectedPhoto.rating) + '☆'.repeat(5 - selectedPhoto.rating) },
-    selectedPhoto.flag && { label: '标记', value: selectedPhoto.flag === 'pick' ? '✅ 留用' : '❌ 弃用' },
-    meta?.dateTimeOriginal && { label: '拍摄时间', value: meta.dateTimeOriginal },
-    meta?.cameraMake && { label: '相机制造商', value: meta.cameraMake },
-    meta?.cameraModel && { label: '相机型号', value: meta.cameraModel },
-    meta?.lensModel && { label: '镜头', value: meta.lensModel },
-    meta?.focalLength && { label: '焦距', value: `${meta.focalLength}mm` },
-    meta?.aperture && { label: '光圈', value: `f/${meta.aperture}` },
-    meta?.shutterSpeed && { label: '快门', value: `${meta.shutterSpeed}s` },
-    meta?.iso && { label: 'ISO', value: String(meta.iso) },
-    meta?.orientation && { label: '方向', value: String(meta.orientation) },
-    meta?.fileType && { label: '文件类型', value: meta.fileType },
-    activeVersion && { label: '当前版本', value: activeVersion.versionName },
-    activeVersion?.uploadedBy && { label: '修改用户', value: activeVersion.uploadedBy },
-    activeVersion?.uploadedAt && { label: '上传时间', value: new Date(activeVersion.uploadedAt).toLocaleString() },
-    (meta?.gpsLatitude || meta?.gpsLongitude) && {
-      label: 'GPS',
-      value: `${meta.gpsLatitude?.toFixed(4) ?? '?'}, ${meta.gpsLongitude?.toFixed(4) ?? '?'}`,
-    },
-    meta?.gpsAltitude && { label: '海拔', value: `${meta.gpsAltitude.toFixed(1)}m` },
-  ].filter(Boolean) as { label: string; value: string }[] : []
+  const infoItems = selectedPhoto
+    ? ([
+        { label: '文件名', value: displayFileName || selectedPhoto.fileName },
+        { label: '大小', value: formatFileSize(displayFileSize) },
+        { label: '分辨率', value: `${displayWidth} × ${displayHeight}` },
+        selectedPhoto.rating > 0 && {
+          label: '评分',
+          value: '★'.repeat(selectedPhoto.rating) + '☆'.repeat(5 - selectedPhoto.rating)
+        },
+        selectedPhoto.flag && {
+          label: '标记',
+          value: selectedPhoto.flag === 'pick' ? '✅ 留用' : '❌ 弃用'
+        },
+        meta?.dateTimeOriginal && { label: '拍摄时间', value: meta.dateTimeOriginal },
+        meta?.cameraMake && { label: '相机制造商', value: meta.cameraMake },
+        meta?.cameraModel && { label: '相机型号', value: meta.cameraModel },
+        meta?.lensModel && { label: '镜头', value: meta.lensModel },
+        meta?.focalLength && { label: '焦距', value: `${meta.focalLength}mm` },
+        meta?.aperture && { label: '光圈', value: `f/${meta.aperture}` },
+        meta?.shutterSpeed && { label: '快门', value: `${meta.shutterSpeed}s` },
+        meta?.iso && { label: 'ISO', value: String(meta.iso) },
+        meta?.orientation && { label: '方向', value: String(meta.orientation) },
+        meta?.fileType && { label: '文件类型', value: meta.fileType },
+        activeVersion && { label: '当前版本', value: activeVersion.versionName },
+        activeVersion?.uploadedBy && { label: '修改用户', value: activeVersion.uploadedBy },
+        activeVersion?.uploadedAt && {
+          label: '上传时间',
+          value: new Date(activeVersion.uploadedAt).toLocaleString()
+        },
+        (meta?.gpsLatitude || meta?.gpsLongitude) && {
+          label: 'GPS',
+          value: `${meta.gpsLatitude?.toFixed(4) ?? '?'}, ${meta.gpsLongitude?.toFixed(4) ?? '?'}`
+        },
+        meta?.gpsAltitude && { label: '海拔', value: `${meta.gpsAltitude.toFixed(1)}m` }
+      ].filter(Boolean) as { label: string; value: string }[])
+    : []
 
   return (
     <aside className="w-72 bg-[var(--color-sidebar)] border-l border-[var(--color-border)] flex flex-col overflow-y-auto">
       {/* Header */}
       <div className="h-10 flex items-center gap-2 px-4 border-b border-[var(--color-border)] shrink-0">
-        <span className="text-sm font-semibold text-gray-700 dark:text-gray-200 shrink-0">信息</span>
+        <span className="text-sm font-semibold text-gray-700 dark:text-gray-200 shrink-0">
+          信息
+        </span>
         {versions.length > 0 && (
           <select
             value={selectedVersionId ?? ''}
             onChange={(e) => setSelectedVersionId(e.target.value || null)}
             className="text-[10px] bg-transparent border border-gray-300 dark:border-gray-600 rounded px-1 py-0.5 text-gray-600 dark:text-gray-300 max-w-[140px] truncate focus:outline-none"
           >
-            {versions.map(v => (
+            {versions.map((v) => (
               <option key={v.id} value={v.id}>
                 {v.versionName} {v.isOriginal ? '★' : ''}
               </option>
@@ -227,24 +292,37 @@ export function InspectorPanel(): React.JSX.Element {
           <div className="py-6 text-center">
             <div className="text-3xl mb-2">🖼️</div>
             <div className="text-xs text-gray-400">
-              {selectedPhotoIds.size === 0 ? '未选择照片' : `已选择 ${selectedPhotoIds.size} 张照片`}
+              {selectedPhotoIds.size === 0
+                ? '未选择照片'
+                : `已选择 ${selectedPhotoIds.size} 张照片`}
             </div>
           </div>
         ) : (
           <>
             {/* Metadata (compact) */}
             <div className="px-4 py-2.5 space-y-1.5">
-              {refreshing && <div className="text-xs text-gray-400 animate-pulse">正在读取元数据...</div>}
+              {refreshing && (
+                <div className="text-xs text-gray-400 animate-pulse">正在读取元数据...</div>
+              )}
               {loadFailed && (
                 <div className="text-xs text-red-400 mb-2">
                   元数据读取失败
-                  <button onClick={() => setRefreshing(true)} className="ml-2 text-[#007AFF] hover:underline">重试</button>
+                  <button
+                    onClick={() => setRefreshing(true)}
+                    className="ml-2 text-[#007AFF] hover:underline"
+                  >
+                    重试
+                  </button>
                 </div>
               )}
               {infoItems.map((item) => (
                 <div key={item.label} className="flex items-start gap-2">
-                  <span className="text-[11px] text-gray-400 shrink-0 w-14 pt-0.5">{item.label}</span>
-                  <span className="text-sm text-gray-800 dark:text-gray-200 truncate">{item.value}</span>
+                  <span className="text-[11px] text-gray-400 shrink-0 w-14 pt-0.5">
+                    {item.label}
+                  </span>
+                  <span className="text-sm text-gray-800 dark:text-gray-200 truncate">
+                    {item.value}
+                  </span>
                 </div>
               ))}
             </div>
@@ -255,16 +333,18 @@ export function InspectorPanel(): React.JSX.Element {
       {/* Current photo tags — always visible above tag filter */}
       <div className="border-t border-[var(--color-border)] shrink-0">
         <div className="px-4 py-3">
-          <span className="text-[11px] text-gray-400 uppercase tracking-wider block mb-1.5">当前标签</span>
+          <span className="text-[11px] text-gray-400 uppercase tracking-wider block mb-1.5">
+            当前标签
+          </span>
           <div className="flex flex-wrap gap-1.5 min-h-[1.25rem] items-center">
             {photoTags.length > 0 ? (
-              photoTags.map(tag => (
+              photoTags.map((tag) => (
                 <span
                   key={tag.id}
                   className="px-1.5 py-0.5 rounded text-[10px] font-medium"
                   style={{
                     backgroundColor: tag.color.replace('hsl(', 'hsla(').replace(')', ', 0.3)'),
-                    color: tag.color,
+                    color: tag.color
                   }}
                 >
                   {tag.name}
@@ -296,29 +376,42 @@ export function InspectorPanel(): React.JSX.Element {
                   className="flex-1 px-2 py-1 text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
                   autoFocus
                   onKeyDown={async (e) => {
-                    if (e.key === 'Escape') { setShowAddTag(false); setNewTagName(''); return }
+                    if (e.key === 'Escape') {
+                      setShowAddTag(false)
+                      setNewTagName('')
+                      return
+                    }
                     if (e.key !== 'Enter' || !newTagName.trim() || !selectedPhoto) return
                     try {
-                      const created = await window.electron.ipcRenderer.invoke('tags:create', {
+                      const created = (await window.electron.ipcRenderer.invoke('tags:create', {
                         eventId: selectedPhoto.eventId,
-                        name: newTagName.trim(),
-                      }) as { id: string; name: string; color: string; error?: string }
+                        name: newTagName.trim()
+                      })) as { id: string; name: string; color: string; error?: string }
                       if (created.error) return
                       await window.electron.ipcRenderer.invoke('tags:addToPhoto', {
                         photoId: selectedPhoto.id,
                         tagId: created.id,
-                        eventId: selectedPhoto.eventId,
+                        eventId: selectedPhoto.eventId
                       })
-                      setPhotoTags(prev => [...prev, { id: created.id, name: created.name, color: created.color }])
+                      setPhotoTags((prev) => [
+                        ...prev,
+                        { id: created.id, name: created.name, color: created.color }
+                      ])
                       setNewTagName('')
                       setShowAddTag(false)
                       window.dispatchEvent(new Event('refresh-tags'))
                     } catch {}
                   }}
-                  onBlur={() => { setShowAddTag(false); setNewTagName('') }}
+                  onBlur={() => {
+                    setShowAddTag(false)
+                    setNewTagName('')
+                  }}
                 />
                 <button
-                  onClick={() => { setShowAddTag(false); setNewTagName('') }}
+                  onClick={() => {
+                    setShowAddTag(false)
+                    setNewTagName('')
+                  }}
                   className="text-[10px] text-gray-400 hover:text-gray-600"
                 >
                   取消
@@ -347,7 +440,7 @@ export function InspectorPanel(): React.JSX.Element {
             {eventTags.length === 0 ? (
               <span className="text-[10px] text-gray-400">暂无标签</span>
             ) : (
-              eventTags.map(tag => {
+              eventTags.map((tag) => {
                 const active = filterTagIds.has(tag.id)
                 const fadedColor = tag.color.replace('hsl(', 'hsla(').replace(')', ', 0.3)')
                 return (
@@ -356,18 +449,18 @@ export function InspectorPanel(): React.JSX.Element {
                     onClick={() => toggleFilter(tag.id)}
                     className={cn(
                       'px-1.5 py-0.5 rounded text-[10px] font-medium transition-all',
-                      active ? 'ring-1 ring-offset-1 ring-offset-transparent' : 'opacity-60 hover:opacity-100'
+                      active
+                        ? 'ring-1 ring-offset-1 ring-offset-transparent'
+                        : 'opacity-60 hover:opacity-100'
                     )}
                     style={{
                       backgroundColor: active ? tag.color : fadedColor,
                       color: active ? '#fff' : tag.color,
-                      outline: active ? '2px solid ' + tag.color : 'none',
+                      outline: active ? '2px solid ' + tag.color : 'none'
                     }}
                   >
                     {tag.name}
-                    {active && filterTagIds.size > 1 && (
-                      <span className="ml-1 opacity-70">✓</span>
-                    )}
+                    {active && filterTagIds.size > 1 && <span className="ml-1 opacity-70">✓</span>}
                   </button>
                 )
               })
@@ -394,17 +487,25 @@ export function InspectorPanel(): React.JSX.Element {
             {eventVersionNames.length === 0 ? (
               <span className="text-[10px] text-gray-400">暂无版本</span>
             ) : (
-              eventVersionNames.map(name => {
+              eventVersionNames.map((name) => {
                 const active = filterVersionNames.has(name)
-                const abbr = name.includes('修图') || name.includes('上传') || name.includes('手机') || name.includes('_')
-                  ? name.replace(/_/g, ' · ')
-                  : name
-                const isUserVersion = name.includes('修图') || name.includes('上传') || name.includes('手机') || name.includes('_')
+                const abbr =
+                  name.includes('修图') ||
+                  name.includes('上传') ||
+                  name.includes('手机') ||
+                  name.includes('_')
+                    ? name.replace(/_/g, ' · ')
+                    : name
+                const isUserVersion =
+                  name.includes('修图') ||
+                  name.includes('上传') ||
+                  name.includes('手机') ||
+                  name.includes('_')
                 return (
                   <button
                     key={name}
                     onClick={() => {
-                      setFilterVersionNames(prev => {
+                      setFilterVersionNames((prev) => {
                         const next = new Set(prev)
                         if (next.has(name)) next.delete(name)
                         else next.add(name)
@@ -413,14 +514,22 @@ export function InspectorPanel(): React.JSX.Element {
                     }}
                     className={cn(
                       'px-1.5 py-0.5 rounded text-[10px] font-medium transition-all',
-                      active ? 'ring-1 ring-offset-1 ring-offset-transparent text-white' : 'opacity-60 hover:opacity-100'
+                      active
+                        ? 'ring-1 ring-offset-1 ring-offset-transparent text-white'
+                        : 'opacity-60 hover:opacity-100'
                     )}
                     style={{
                       backgroundColor: active
-                        ? (isUserVersion ? '#16a34a' : '#6366f1')
-                        : (isUserVersion ? 'rgba(22,163,74,0.3)' : 'rgba(99,102,241,0.3)'),
-                      color: active ? '#fff' : (isUserVersion ? '#16a34a' : '#6366f1'),
-                      outline: active ? `2px solid ${isUserVersion ? '#16a34a' : '#6366f1'}` : 'none',
+                        ? isUserVersion
+                          ? '#16a34a'
+                          : '#6366f1'
+                        : isUserVersion
+                          ? 'rgba(22,163,74,0.3)'
+                          : 'rgba(99,102,241,0.3)',
+                      color: active ? '#fff' : isUserVersion ? '#16a34a' : '#6366f1',
+                      outline: active
+                        ? `2px solid ${isUserVersion ? '#16a34a' : '#6366f1'}`
+                        : 'none'
                     }}
                   >
                     {abbr}
