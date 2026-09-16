@@ -7,6 +7,7 @@ import { Trash2, Pencil, TrashIcon, Wifi, StopCircle } from 'lucide-react'
 import { confirm } from '../ui/ConfirmDialog'
 
 export function Sidebar(): React.JSX.Element {
+  const isMacOS = window.electron.process.platform === 'darwin'
   const { events, selectedEventId, setSelectedEvent, removeEvent, updateEvent } = useEventStore()
   const { setPhotos } = usePhotoStore()
   const { showingTrash, setShowingTrash, setCreateEventDialogOpen } = useUIStore()
@@ -127,7 +128,7 @@ export function Sidebar(): React.JSX.Element {
   return (
     <aside className="w-64 bg-[var(--color-sidebar)] border-r border-[var(--color-border)] flex flex-col">
       {/* Title */}
-      <div className="h-12 flex items-center px-4 gap-2 shrink-0 drag-region">
+      <div className={`h-12 flex items-center gap-2 shrink-0 drag-region ${isMacOS ? 'pl-[72px] pr-4' : 'px-4'}`}>
         <div className="w-2.5 h-2.5 rounded-full bg-[#007AFF]" />
         <span className="font-semibold text-sm text-gray-800 dark:text-gray-100">
           PhotoPeek

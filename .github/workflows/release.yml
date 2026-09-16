@@ -1,0 +1,127 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish (for example v2.0.5)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Build Windows x64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check tag matches package version
+        shell: pwsh
+        run: |
+          $tag = '${{ github.event.inputs.tag || github.ref_name }}'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne "v$version") { throw "Tag $tag does not match package.json version $version" }
+      - run: npm run build:win
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./scripts/build-iexpress-installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photopeek-windows
+          if-no-files-found: error
+          path: |
+            dist/photopeek-*-win-x64.zip
+            dist/photopeek-*-win-x64-setup.exe
+
+  macos:
+    name: Build macOS Apple Silicon
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION" || { echo "Tag $RELEASE_TAG does not match package.json version $VERSION"; exit 1; }
+      - run: npm run build:mac-arm64
+      - run: npm run build:mac-dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photopeek-macos-arm64
+          if-no-files-found: error
+          path: |
+            dist/photopeek-*-mac-arm64.zip
+            dist/photopeek-*.dmg
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [windows, macos]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Verify assets and generate checksums
+        id: assets
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+          expected=(
+            "photopeek-${VERSION}-win-x64.zip"
+            "photopeek-${VERSION}-win-x64-setup.exe"
+            "photopeek-${VERSION}-mac-arm64.zip"
+            "photopeek-${VERSION}.dmg"
+          )
+          for file in "${expected[@]}"; do
+            test -s "release-assets/$file" || { echo "Missing release asset: $file"; exit 1; }
+          done
+          (cd release-assets && shasum -a 256 "${expected[@]}" > SHA256SUMS.txt)
+          {
+            echo 'files<<EOF'
+            printf 'release-assets/%s\n' "${expected[@]}"
+            echo 'release-assets/SHA256SUMS.txt'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      - name: Create draft release with all platform assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            release-assets/*
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

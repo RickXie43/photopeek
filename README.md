@@ -156,6 +156,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build-iexpress-installer.ps1
 # macOS Apple Silicon（M1/M2/M3/M4；必须在 macOS 主机上执行）
 npm run build:mac-arm64
 
+# macOS Apple Silicon DMG 安装包
+npm run build:mac-dmg
+
 # Linux（AppImage / snap / deb）
 npm run build:linux
 ```
@@ -167,15 +170,16 @@ npm run build:linux
 | `npm run build:win` | `dist/photopeek-<版本>-win-x64.zip` | Windows x64 便携版 |
 | `scripts/build-iexpress-installer.ps1` | `dist/photopeek-<版本>-win-x64-setup.exe` | Windows x64 安装版；需要先生成对应 ZIP |
 | `npm run build:mac-arm64` | `dist/photopeek-<版本>-mac-arm64.zip` | macOS Apple Silicon 便携包 |
+| `npm run build:mac-dmg` | `dist/photopeek-<版本>.dmg` | macOS Apple Silicon 磁盘映像安装包 |
 | `npm run build:linux` | `dist/photopeek-<版本>.*` | Linux AppImage / snap / deb |
 
 `npm run build:mac-arm64` 会先执行类型检查与生产编译，再由 electron-builder 下载/打包 arm64 Electron 运行时。macOS 构建不能从 Windows 跨平台完成，请在 M 系列 Mac 或 macOS Apple Silicon CI runner 上执行。
 
-### macOS M 系列芯片后续编译
+### macOS Apple Silicon DMG 构建与安装
 
-在 M 系列 Mac 上：
+在 M 系列 Mac 上按以下流程构建 DMG：
 
-1. 安装 Node.js 20 或更高版本、Git，以及 Xcode Command Line Tools（运行 `xcode-select --install`）。
+1. 安装 Node.js 20 或更高版本、Git 和 Xcode Command Line Tools（未安装时运行 `xcode-select --install`）。
 2. 克隆项目并安装依赖：
 
    ```bash
@@ -184,27 +188,25 @@ npm run build:linux
    npm ci
    ```
 
-3. 构建 Apple Silicon 包：
+   如果依赖已安装且没有变更，可跳过 `npm ci`。
+
+3. 构建 DMG：
 
    ```bash
-   npm run build:mac-arm64
+   npm run build:mac-dmg
    ```
 
-4. 取用 `dist/photopeek-<版本>-mac-arm64.zip`。解压后将 `photopeek.app` 移入「应用程序」即可。
+   该命令会先执行 Node 与 Web TypeScript 检查、生成 `out/` 生产文件，再调用 electron-builder 为 arm64 架构生成 DMG。产物位于 `dist/photopeek-<版本>.dmg`。只需要 ZIP 便携包时运行 `npm run build:mac-arm64`。
 
-项目也提供 GitHub Actions 工作流：在仓库的 **Actions → Build macOS Apple Silicon → Run workflow** 手动运行，完成后从该次运行的 **Artifacts** 下载 `photopeek-mac-arm64`；发布 GitHub Release 后工作流也会自动生成同名 artifact。
+4. 安装或更新：双击 DMG，将 `photopeek.app` 拖到「应用程序」。更新现有版本时先退出 PhotoPeek，再确认替换旧版。
 
-当前 macOS 构建目标是 ZIP，项目未配置 Apple Developer ID 签名或 notarization（`notarize: false`）。因此该包用于自用/测试；公开分发前应配置开发者签名和公证，否则 macOS 可能提示开发者身份无法验证。
+项目通过 GitHub Actions 自动构建并发布多平台版本。把版本号更新到 `package.json` 和 `package-lock.json` 后，提交并推送版本标签（例如 `v2.0.5`），工作流会分别在 Windows 和 Apple Silicon macOS runner 上构建，校验所有产物后将 Windows ZIP、Windows 安装包、macOS ZIP、macOS DMG 和 SHA-256 清单一起发布到同一个 GitHub Release。任一平台构建失败时不会发布 Release。工作流也可在 **Actions → Build and publish release → Run workflow** 中手动执行已有标签。
+
+当前 macOS DMG 未配置 Apple Developer ID 签名或 notarization（`notarize: false`），适用于自用和测试。公开分发前应配置开发者签名和公证，否则 macOS 可能提示开发者身份无法验证。
 
 ### 生成版本发布
 
-更新 `package.json` 及 `package-lock.json` 中的版本号后，可在 Windows 运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -SkipMac
-```
-
-该脚本生成 Windows x64 便携包、安装包和 SHA-256 清单，并整理到 `dist/<版本>/`。macOS ZIP 请在 Mac 或 GitHub Actions 上构建后放入同一目录。完整约定见 [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)。
+请使用 Git 标签触发 GitHub Actions，构建与发布步骤见 [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)。`dist/` 是本地构建目录并由 Git 忽略；发布文件由 GitHub Actions 汇总，不需要在不同电脑间同步或提交 `dist/`。
 
 ### 推荐开发工具
 

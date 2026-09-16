@@ -1,6 +1,9 @@
 /// <reference types="vite/client" />
 
 interface ElectronAPI {
+  process: {
+    platform: string
+  }
   ipcRenderer: {
     send: (channel: string, ...args: unknown[]) => void
     on: (channel: string, listener: (...args: unknown[]) => void) => () => void
