@@ -12,7 +12,7 @@ import {
   Upload,
   ChevronDown,
   ChevronUp,
-  ImageIcon,
+  ImageIcon
 } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import type {
@@ -22,7 +22,7 @@ import type {
   ExportProgress,
   ExportResult,
   ExportPreset,
-  Photo,
+  Photo
 } from '../../types/photo'
 
 const TEMPLATE_PRESETS: { label: string; template: string }[] = [
@@ -30,7 +30,7 @@ const TEMPLATE_PRESETS: { label: string; template: string }[] = [
   { label: '按版本', template: '{version}/{originalName}{extension}' },
   { label: '按标签', template: '{firstTag}/{originalName}{extension}' },
   { label: '按日期', template: '{year}/{month}/{originalName}{extension}' },
-  { label: '按评分', template: '{rating}★/{originalName}{extension}' },
+  { label: '按评分', template: '{rating}★/{originalName}{extension}' }
 ]
 
 const DEFAULT_ORGANIZE_TEMPLATE = '{originalName}{extension}'
@@ -45,19 +45,14 @@ function formatSize(bytes: number): string {
 
 export function ExportDialog({
   open,
-  onClose,
+  onClose
 }: {
   open: boolean
   onClose: () => void
 }): React.JSX.Element {
   const { selectedEventId, events } = useEventStore()
   const eventName = events.find((e) => e.id === selectedEventId)?.name || ''
-  const {
-    exportPresets,
-    saveExportPreset,
-    deleteExportPreset,
-    renameExportPreset,
-  } = useUIStore()
+  const { exportPresets, saveExportPreset, deleteExportPreset, renameExportPreset } = useUIStore()
 
   // ── Core state ──
   const [tags, setTags] = useState<Tag[]>([])
@@ -67,15 +62,10 @@ export function ExportDialog({
   // ── Advanced state ──
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [destinationFolder, setDestinationFolder] = useState('')
-  const [versionFilterMode, setVersionFilterMode] =
-    useState<VersionFilterMode>('all')
-  const [selectedVersionNames, setSelectedVersionNames] = useState<Set<string>>(
-    new Set()
-  )
+  const [versionFilterMode, setVersionFilterMode] = useState<VersionFilterMode>('all')
+  const [selectedVersionNames, setSelectedVersionNames] = useState<Set<string>>(new Set())
   const [allVersionNames, setAllVersionNames] = useState<string[]>([])
-  const [organizeTemplate, setOrganizeTemplate] = useState(
-    DEFAULT_ORGANIZE_TEMPLATE
-  )
+  const [organizeTemplate, setOrganizeTemplate] = useState(DEFAULT_ORGANIZE_TEMPLATE)
   const [overwriteMode, setOverwriteMode] = useState<OverwriteMode>('skip')
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null)
   const [showSavePreset, setShowSavePreset] = useState(false)
@@ -88,6 +78,7 @@ export function ExportDialog({
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState<ExportProgress | null>(null)
   const [result, setResult] = useState<ExportResult | null>(null)
+  const [exportKind, setExportKind] = useState<'photos' | 'event'>('photos')
 
   // Reset on open
   useEffect(() => {
@@ -106,6 +97,7 @@ export function ExportDialog({
       setSelectedPresetId(null)
       setShowSavePreset(false)
       setManagePresets(false)
+      setExportKind('photos')
     }
   }, [open])
 
@@ -114,10 +106,9 @@ export function ExportDialog({
     if (!open || !selectedEventId) return
     Promise.all([
       window.electron.ipcRenderer.invoke('tags:list', selectedEventId) as Promise<Tag[]>,
-      window.electron.ipcRenderer.invoke(
-        'photos:listVersionNames',
-        selectedEventId
-      ) as Promise<string[]>,
+      window.electron.ipcRenderer.invoke('photos:listVersionNames', selectedEventId) as Promise<
+        string[]
+      >
     ])
       .then(([tagList, versionNames]) => {
         setTags(tagList)
@@ -135,16 +126,16 @@ export function ExportDialog({
         let photos: Photo[]
         if (tagIds.length === 0) {
           // No tags → all photos
-          photos = (await window.electron.ipcRenderer.invoke(
-            'photos:listByTagsOr',
-            { eventId: selectedEventId, tagIds: [] }
-          )) as Photo[]
+          photos = (await window.electron.ipcRenderer.invoke('photos:listByTagsOr', {
+            eventId: selectedEventId,
+            tagIds: []
+          })) as Photo[]
         } else {
           // With tags → AND (intersection) mode
-          photos = (await window.electron.ipcRenderer.invoke(
-            'photos:listByTags',
-            { eventId: selectedEventId, tagIds }
-          )) as Photo[]
+          photos = (await window.electron.ipcRenderer.invoke('photos:listByTags', {
+            eventId: selectedEventId,
+            tagIds
+          })) as Photo[]
         }
         setPreviewPhotos(photos)
       } catch (err) {
@@ -159,10 +150,7 @@ export function ExportDialog({
     const handler = (_event: unknown, p: ExportProgress): void => {
       if (p) setProgress(p)
     }
-    window.electron.ipcRenderer.on(
-      'export:progress',
-      handler as (...args: unknown[]) => void
-    )
+    window.electron.ipcRenderer.on('export:progress', handler as (...args: unknown[]) => void)
     return () => {
       window.electron.ipcRenderer.removeListener(
         'export:progress',
@@ -228,11 +216,11 @@ export function ExportDialog({
     saveExportPreset(name, {
       versionFilter: {
         mode: versionFilterMode,
-        selectedVersionNames: Array.from(selectedVersionNames),
+        selectedVersionNames: Array.from(selectedVersionNames)
       },
       tagFilter: null,
       organizeTemplate,
-      overwriteMode,
+      overwriteMode
     })
     setNewPresetName('')
     setShowSavePreset(false)
@@ -242,7 +230,7 @@ export function ExportDialog({
     selectedVersionNames,
     organizeTemplate,
     overwriteMode,
-    saveExportPreset,
+    saveExportPreset
   ])
 
   // ── Filter preview photos by version selection ──
@@ -252,7 +240,9 @@ export function ExportDialog({
       let versions: string[] = []
       try {
         if (photo.versionSummary) versions = JSON.parse(photo.versionSummary)
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       return versions.some((v) => selectedVersionNames.has(v))
     })
   }, [previewPhotos, selectedVersionNames])
@@ -260,8 +250,32 @@ export function ExportDialog({
   // ── Template preview ──
   const templatePreview = useMemo((): string[] => {
     const examples = [
-      { originalName: 'DSC_001', extension: '.jpg', version: 'RAW', firstTag: '风景', tags: '风景,旅行', year: '2026', month: '06', day: '15', date: '2026-06-15', rating: '5', flag: 'pick' },
-      { originalName: 'DSC_002', extension: '.jpg', version: 'JPEG', firstTag: '人像', tags: '人像', year: '2026', month: '06', day: '15', date: '2026-06-15', rating: '3', flag: 'none' },
+      {
+        originalName: 'DSC_001',
+        extension: '.jpg',
+        version: 'RAW',
+        firstTag: '风景',
+        tags: '风景,旅行',
+        year: '2026',
+        month: '06',
+        day: '15',
+        date: '2026-06-15',
+        rating: '5',
+        flag: 'pick'
+      },
+      {
+        originalName: 'DSC_002',
+        extension: '.jpg',
+        version: 'JPEG',
+        firstTag: '人像',
+        tags: '人像',
+        year: '2026',
+        month: '06',
+        day: '15',
+        date: '2026-06-15',
+        rating: '3',
+        flag: 'none'
+      }
     ]
     return examples.map((ex) => {
       let path = organizeTemplate
@@ -276,32 +290,44 @@ export function ExportDialog({
   const handleExport = useCallback(async (): Promise<void> => {
     if (!selectedEventId) return
 
-    const parentFolder = (await window.electron.ipcRenderer.invoke(
-      'export:selectFolder'
-    )) as string | null
+    const parentFolder = (await window.electron.ipcRenderer.invoke('export:selectFolder')) as
+      | string
+      | null
     if (!parentFolder) return
 
-    const tagNames = tags
-      .filter((t) => selectedTagIds.has(t.id))
-      .map((t) => t.name)
+    if (exportKind === 'event') {
+      setExporting(true)
+      setResult(null)
+      setProgress({ current: 0, total: 0, message: '准备导出事件...', percent: 0 })
+      try {
+        const res = (await window.electron.ipcRenderer.invoke('export:executeEvent', {
+          eventId: selectedEventId,
+          parentFolder: destinationFolder || parentFolder
+        })) as ExportResult
+        setResult(res)
+        setProgress(null)
+      } catch (err) {
+        setResult({ success: false, exported: 0, skipped: 0, errors: [(err as Error).message] })
+        setProgress(null)
+      } finally {
+        setExporting(false)
+      }
+      return
+    }
+
+    const tagNames = tags.filter((t) => selectedTagIds.has(t.id)).map((t) => t.name)
     const tagSuffix = tagNames.length > 0 ? `_${tagNames.join('_')}` : ''
-    const timeStr = new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace(/[T:]/g, '')
-      .slice(0, 14)
+    const timeStr = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '').slice(0, 14)
     const folderName = `${eventName}${tagSuffix}_${timeStr}`
     const resolvedDest =
-      showAdvanced && destinationFolder
-        ? destinationFolder
-        : `${parentFolder}/${folderName}`
+      showAdvanced && destinationFolder ? destinationFolder : `${parentFolder}/${folderName}`
 
     const tagFilter =
       selectedTagIds.size > 0
         ? {
             mode: 'intersection' as const,
             includeTagIds: Array.from(selectedTagIds),
-            excludeTagIds: [] as string[],
+            excludeTagIds: [] as string[]
           }
         : null
 
@@ -315,13 +341,12 @@ export function ExportDialog({
         destinationFolder: resolvedDest,
         versionFilter: {
           // Safety net: whenever specific versions are selected, export ONLY them
-          mode:
-            selectedVersionNames.size > 0 ? 'selected-only' : versionFilterMode,
-          selectedVersionNames: Array.from(selectedVersionNames),
+          mode: selectedVersionNames.size > 0 ? 'selected-only' : versionFilterMode,
+          selectedVersionNames: Array.from(selectedVersionNames)
         },
         tagFilter,
         organizeTemplate,
-        overwriteMode,
+        overwriteMode
       })) as ExportResult
       setResult(res)
       setProgress(null)
@@ -331,7 +356,7 @@ export function ExportDialog({
         success: false,
         exported: 0,
         skipped: 0,
-        errors: [(err as Error).message],
+        errors: [(err as Error).message]
       })
       setProgress(null)
     } finally {
@@ -348,6 +373,7 @@ export function ExportDialog({
     selectedVersionNames,
     organizeTemplate,
     overwriteMode,
+    exportKind
   ])
 
   const handleCancel = useCallback(async (): Promise<void> => {
@@ -379,11 +405,34 @@ export function ExportDialog({
     <Dialog
       open={open}
       onClose={handleClose}
-      title="导出"
+      title={exportKind === 'event' ? '导出事件' : '导出照片'}
       className="max-w-lg"
       closeOnOverlayClick={false}
     >
       <div className="space-y-4">
+        <div className="flex gap-2 border-b border-gray-200 dark:border-gray-700 pb-3">
+          {(['photos', 'event'] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => setExportKind(kind)}
+              className={cn(
+                'px-3 py-1.5 text-xs rounded-lg border transition-colors',
+                exportKind === kind
+                  ? 'bg-[#007AFF] text-white border-[#007AFF]'
+                  : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+              )}
+            >
+              {kind === 'photos' ? '导出照片' : '导出事件'}
+            </button>
+          ))}
+        </div>
+        {exportKind === 'event' && (
+          <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 p-3 text-xs">
+            将导出当前事件的全部照片、全部版本、标签和元数据，并生成可移植的 PhotoPeek
+            事件文件夹。高级筛选在事件导出模式下不生效。
+          </div>
+        )}
         {/* Event name */}
         <div className="text-xs text-gray-500">
           事件：<span className="font-medium text-gray-700 dark:text-gray-300">{eventName}</span>
@@ -392,7 +441,9 @@ export function ExportDialog({
         {/* ═══ Tag selection ═══ */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs font-medium text-gray-600 dark:text-gray-400">标签筛选（交集）</label>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400">
+              标签筛选（交集）
+            </label>
             {selectedTagIds.size > 0 && (
               <button
                 type="button"
@@ -421,9 +472,7 @@ export function ExportDialog({
                         : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400'
                     )}
                     style={
-                      checked
-                        ? { backgroundColor: tag.color, borderColor: tag.color }
-                        : undefined
+                      checked ? { backgroundColor: tag.color, borderColor: tag.color } : undefined
                     }
                   >
                     {checked ? '✓ ' : ''}
@@ -485,11 +534,13 @@ export function ExportDialog({
         {/* ═══ Preview horizontal list ═══ */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
-              匹配结果
-            </span>
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">匹配结果</span>
             <span className="text-xs text-gray-400">
-              共 <span className="font-medium text-gray-600 dark:text-gray-300">{filteredPhotos.length}</span> 张照片
+              共{' '}
+              <span className="font-medium text-gray-600 dark:text-gray-300">
+                {filteredPhotos.length}
+              </span>{' '}
+              张照片
             </span>
           </div>
           {filteredPhotos.length > 0 ? (
@@ -499,7 +550,9 @@ export function ExportDialog({
                 let versions: string[] = []
                 try {
                   if (photo.versionSummary) versions = JSON.parse(photo.versionSummary)
-                } catch { /* ignore */ }
+                } catch {
+                  /* ignore */
+                }
                 const formatLabel = versions.length > 0 ? versions.join(' / ') : ''
                 return (
                   <div
@@ -533,7 +586,9 @@ export function ExportDialog({
                         {formatLabel && <span className="mr-2">{formatLabel}</span>}
                         <span>{formatSize(photo.fileSize)}</span>
                         {photo.width && photo.height && (
-                          <span className="ml-2">{photo.width}×{photo.height}</span>
+                          <span className="ml-2">
+                            {photo.width}×{photo.height}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -560,7 +615,10 @@ export function ExportDialog({
               <span className="text-[#007AFF]">
                 {eventName}
                 {selectedTagIds.size > 0
-                  ? `_${tags.filter((t) => selectedTagIds.has(t.id)).map((t) => t.name).join('_')}`
+                  ? `_${tags
+                      .filter((t) => selectedTagIds.has(t.id))
+                      .map((t) => t.name)
+                      .join('_')}`
                   : ''}
                 _{new Date().toISOString().slice(0, 19).replace(/[T:]/g, '').slice(0, 14)}
               </span>
@@ -585,7 +643,9 @@ export function ExportDialog({
             <div className="space-y-4 mt-3">
               {/* Destination folder */}
               <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">目标文件夹</label>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  目标文件夹
+                </label>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -594,10 +654,16 @@ export function ExportDialog({
                     placeholder="留空则自动创建事件名_标签_时间文件夹"
                     className="flex-1 px-3 py-1.5 text-xs bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-500"
                   />
-                  <Button variant="default" size="sm" onClick={async () => {
-                    const folder = (await window.electron.ipcRenderer.invoke('export:selectFolder')) as string | null
-                    if (folder) setDestinationFolder(folder)
-                  }}>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={async () => {
+                      const folder = (await window.electron.ipcRenderer.invoke(
+                        'export:selectFolder'
+                      )) as string | null
+                      if (folder) setDestinationFolder(folder)
+                    }}
+                  >
                     <FolderOpen size={14} />
                   </Button>
                 </div>
@@ -605,7 +671,9 @@ export function ExportDialog({
 
               {/* Presets */}
               <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">导出预设</label>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  导出预设
+                </label>
                 <div className="flex items-center gap-2">
                   <select
                     value={selectedPresetId ?? '__default__'}
@@ -614,30 +682,107 @@ export function ExportDialog({
                   >
                     <option value="__default__">— 默认配置 —</option>
                     {exportPresets.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
                     ))}
                   </select>
-                  <Button variant="ghost" size="sm" onClick={() => { setNewPresetName(''); setShowSavePreset(true) }} title="另存为预设"><Save size={14} /></Button>
-                  <Button variant="ghost" size="sm" onClick={() => setManagePresets(!managePresets)} title="管理预设"><FolderOpen size={14} /></Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setNewPresetName('')
+                      setShowSavePreset(true)
+                    }}
+                    title="另存为预设"
+                  >
+                    <Save size={14} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setManagePresets(!managePresets)}
+                    title="管理预设"
+                  >
+                    <FolderOpen size={14} />
+                  </Button>
                 </div>
                 {showSavePreset && (
                   <div className="flex gap-2 mt-1.5">
-                    <input type="text" value={newPresetName} onChange={(e) => setNewPresetName(e.target.value)} placeholder="预设名称..." className="flex-1 px-3 py-1.5 text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]" onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setShowSavePreset(false) }} autoFocus />
-                    <Button variant="primary" size="sm" onClick={handleSavePreset} disabled={!newPresetName.trim()}>保存</Button>
-                    <Button variant="ghost" size="sm" onClick={() => setShowSavePreset(false)}><X size={14} /></Button>
+                    <input
+                      type="text"
+                      value={newPresetName}
+                      onChange={(e) => setNewPresetName(e.target.value)}
+                      placeholder="预设名称..."
+                      className="flex-1 px-3 py-1.5 text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
+                      onKeyDown={(e) => {
+                        e.stopPropagation()
+                        if (e.key === 'Enter') handleSavePreset()
+                        if (e.key === 'Escape') setShowSavePreset(false)
+                      }}
+                      autoFocus
+                    />
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleSavePreset}
+                      disabled={!newPresetName.trim()}
+                    >
+                      保存
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setShowSavePreset(false)}>
+                      <X size={14} />
+                    </Button>
                   </div>
                 )}
                 {managePresets && exportPresets.length > 0 && (
                   <div className="space-y-1 mt-1.5 max-h-24 overflow-y-auto">
                     {exportPresets.map((p) => (
-                      <div key={p.id} className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">
+                      <div
+                        key={p.id}
+                        className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                      >
                         {renamingPresetId === p.id ? (
-                          <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="flex-1 px-2 py-0.5 text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded focus:outline-none focus:ring-1 focus:ring-[#007AFF]" onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter' && renameValue.trim()) { renameExportPreset(p.id, renameValue.trim()); setRenamingPresetId(null) } if (e.key === 'Escape') setRenamingPresetId(null) }} autoFocus />
+                          <input
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            className="flex-1 px-2 py-0.5 text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded focus:outline-none focus:ring-1 focus:ring-[#007AFF]"
+                            onKeyDown={(e) => {
+                              e.stopPropagation()
+                              if (e.key === 'Enter' && renameValue.trim()) {
+                                renameExportPreset(p.id, renameValue.trim())
+                                setRenamingPresetId(null)
+                              }
+                              if (e.key === 'Escape') setRenamingPresetId(null)
+                            }}
+                            autoFocus
+                          />
                         ) : (
-                          <span className="flex-1 text-xs text-gray-700 dark:text-gray-300">{p.name}</span>
+                          <span className="flex-1 text-xs text-gray-700 dark:text-gray-300">
+                            {p.name}
+                          </span>
                         )}
-                        <button onClick={() => { setRenamingPresetId(p.id); setRenameValue(p.name) }} className="p-0.5 text-gray-400 hover:text-gray-600" title="重命名"><Pencil size={12} /></button>
-                        <button onClick={() => { if (selectedPresetId === p.id) setSelectedPresetId(null); deleteExportPreset(p.id) }} className="p-0.5 text-gray-400 hover:text-red-500" title="删除"><Trash2 size={12} /></button>
+                        <button
+                          onClick={() => {
+                            setRenamingPresetId(p.id)
+                            setRenameValue(p.name)
+                          }}
+                          className="p-0.5 text-gray-400 hover:text-gray-600"
+                          title="重命名"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (selectedPresetId === p.id) setSelectedPresetId(null)
+                            deleteExportPreset(p.id)
+                          }}
+                          className="p-0.5 text-gray-400 hover:text-red-500"
+                          title="删除"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -646,30 +791,63 @@ export function ExportDialog({
 
               {/* Template */}
               <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">输出整理</label>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  输出整理
+                </label>
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {TEMPLATE_PRESETS.map((preset) => (
-                    <button key={preset.label} type="button" onClick={() => setOrganizeTemplate(preset.template)}
-                      className={cn('px-2 py-0.5 text-xs rounded-lg border transition-colors', organizeTemplate === preset.template ? 'bg-[#007AFF] text-white border-[#007AFF]' : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400')}>
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setOrganizeTemplate(preset.template)}
+                      className={cn(
+                        'px-2 py-0.5 text-xs rounded-lg border transition-colors',
+                        organizeTemplate === preset.template
+                          ? 'bg-[#007AFF] text-white border-[#007AFF]'
+                          : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-gray-400'
+                      )}
+                    >
                       {preset.label}
                     </button>
                   ))}
                 </div>
-                <input type="text" value={organizeTemplate} onChange={(e) => setOrganizeTemplate(e.target.value)}
+                <input
+                  type="text"
+                  value={organizeTemplate}
+                  onChange={(e) => setOrganizeTemplate(e.target.value)}
                   className="w-full px-3 py-1.5 text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#007AFF] font-mono mb-1.5"
-                  onKeyDown={(e) => e.stopPropagation()} />
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
                 <div className="text-[10px] text-gray-400 space-y-0.5">
                   <span className="font-medium">预览：</span>
-                  {templatePreview.map((p, i) => <div key={i} className="truncate">{p}</div>)}
+                  {templatePreview.map((p, i) => (
+                    <div key={i} className="truncate">
+                      {p}
+                    </div>
+                  ))}
                 </div>
               </div>
 
               {/* Overwrite */}
               <div className="flex items-center gap-3">
-                <label className="text-xs font-medium text-gray-600 dark:text-gray-400">重复文件：</label>
-                {([{ value: 'skip' as OverwriteMode, label: '跳过' }, { value: 'replace' as OverwriteMode, label: '覆盖' }]).map((opt) => (
-                  <button key={opt.value} type="button" onClick={() => setOverwriteMode(opt.value)}
-                    className={cn('px-2.5 py-1 text-xs font-medium rounded-lg transition-colors', overwriteMode === opt.value ? 'bg-[#007AFF] text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600')}>
+                <label className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                  重复文件：
+                </label>
+                {[
+                  { value: 'skip' as OverwriteMode, label: '跳过' },
+                  { value: 'replace' as OverwriteMode, label: '覆盖' }
+                ].map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setOverwriteMode(opt.value)}
+                    className={cn(
+                      'px-2.5 py-1 text-xs font-medium rounded-lg transition-colors',
+                      overwriteMode === opt.value
+                        ? 'bg-[#007AFF] text-white'
+                        : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+                    )}
+                  >
                     {opt.label}
                   </button>
                 ))}
@@ -683,25 +861,41 @@ export function ExportDialog({
           <div>
             <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
               <span>{progress.message}</span>
-              <span>{progress.current}/{progress.total}</span>
+              <span>
+                {progress.current}/{progress.total}
+              </span>
             </div>
             <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-              <div className="h-full bg-[#007AFF] rounded-full transition-all duration-200" style={{ width: `${progress.percent}%` }} />
+              <div
+                className="h-full bg-[#007AFF] rounded-full transition-all duration-200"
+                style={{ width: `${progress.percent}%` }}
+              />
             </div>
           </div>
         )}
 
         {/* ═══ Result ═══ */}
         {result && (
-          <div className={cn('p-3 rounded-lg text-xs space-y-1', result.success ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300')}>
-            <div className="font-medium">{result.success ? '✅ 导出完成' : '⚠️ 导出完成（有错误）'}</div>
+          <div
+            className={cn(
+              'p-3 rounded-lg text-xs space-y-1',
+              result.success
+                ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
+                : 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300'
+            )}
+          >
+            <div className="font-medium">
+              {result.success ? '✅ 导出完成' : '⚠️ 导出完成（有错误）'}
+            </div>
             <div>成功导出：{result.exported} 张</div>
             {result.skipped > 0 && <div>跳过：{result.skipped} 张</div>}
             {result.errors.length > 0 && (
               <div>
                 <div>错误：{result.errors.length} 项</div>
                 <ul className="list-disc list-inside text-[10px] opacity-80 max-h-20 overflow-y-auto">
-                  {result.errors.slice(0, 20).map((err, i) => <li key={i}>{err}</li>)}
+                  {result.errors.slice(0, 20).map((err, i) => (
+                    <li key={i}>{err}</li>
+                  ))}
                 </ul>
               </div>
             )}
@@ -717,7 +911,10 @@ export function ExportDialog({
             {exporting ? (
               <span className="animate-pulse">导出中...</span>
             ) : (
-              <><Upload size={14} />导出</>
+              <>
+                <Upload size={14} />
+                导出
+              </>
             )}
           </Button>
         </div>

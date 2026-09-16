@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { app } from 'electron'
 
 export interface PhotoPeekConfig {
   libraryPath: string
@@ -15,7 +16,7 @@ const DEFAULT_CONFIG: PhotoPeekConfig = {
   thumbnailSize: 200,
   autoSaveDb: true,
   language: 'zh-CN',
-  nickname: '',
+  nickname: ''
 }
 
 let _libraryPath: string = ''
@@ -67,7 +68,10 @@ export function sanitizeFolderName(name: string): string {
  * Generate a human-readable folder name from event name + creation date.
  * Format: YYYY_MM_SanitizedEventName (e.g. "2026_06_马尔代夫")
  */
-export function generateFolderName(eventName: string, createdAt: string = new Date().toISOString()): string {
+export function generateFolderName(
+  eventName: string,
+  createdAt: string = new Date().toISOString()
+): string {
   const date = new Date(createdAt)
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -90,11 +94,13 @@ export function ensureUniqueFolderName(baseName: string): string {
 }
 
 function getConfigPath(): string {
-  return path.join(_libraryPath, 'config.json')
+  return path.join(app.getPath('userData'), 'config.json')
 }
 
 function loadConfig(): void {
-  const configPath = getConfigPath()
+  const configPath = fs.existsSync(getConfigPath())
+    ? getConfigPath()
+    : path.join(DEFAULT_CONFIG.libraryPath, 'config.json')
   if (fs.existsSync(configPath)) {
     try {
       const raw = fs.readFileSync(configPath, 'utf-8')
@@ -109,24 +115,18 @@ function loadConfig(): void {
 }
 
 export function saveConfig(config: Partial<PhotoPeekConfig>): PhotoPeekConfig {
-  _config = { ..._config, ...config }
-  _libraryPath = _config.libraryPath
+  const next = { ..._config, ...config }
   const configPath = getConfigPath()
-  try {
-    fs.mkdirSync(_libraryPath, { recursive: true })
-    fs.writeFileSync(configPath, JSON.stringify(_config, null, 2), 'utf-8')
-  } catch (err) {
-    console.error('Failed to save config:', err)
-  }
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  fs.writeFileSync(configPath + '.tmp', JSON.stringify(next, null, 2), 'utf-8')
+  fs.renameSync(configPath + '.tmp', configPath)
+  _config = next
+  _libraryPath = next.libraryPath
   return getConfig()
 }
 
 export function ensureLibraryStructure(): void {
-  const dirs = [
-    _libraryPath,
-    getEventsDir(),
-    getThumbnailsDir(),
-  ]
+  const dirs = [_libraryPath, getEventsDir(), getThumbnailsDir()]
   for (const dir of dirs) {
     fs.mkdirSync(dir, { recursive: true })
   }
@@ -142,7 +142,10 @@ export function initializeLibrary(): void {
 }
 
 export function updateLibraryPath(newPath: string): void {
-  _libraryPath = newPath
-  ensureLibraryStructure()
+  if (!newPath.trim() || !path.isAbsolute(newPath)) throw new Error('请选择有效的绝对目录路径')
+  newPath = path.resolve(newPath)
+  for (const dir of [newPath, path.join(newPath, 'events'), path.join(newPath, 'thumbnails')]) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
   saveConfig({ libraryPath: newPath })
 }

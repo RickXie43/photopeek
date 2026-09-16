@@ -1,15 +1,17 @@
 # PhotoPeek 📸
 
-> `v2.0.1` — [GitHub](https://github.com/Rick/PhotoPeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
+> `v2.0.4` — [GitHub](https://github.com/RickXie43/photopeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
 
 ## 功能特性
 
 - **事件管理** — 以事件（文件夹）为单位组织照片，支持创建、重命名、删除
 - **照片导入** — 从文件夹批量导入照片，自动读取 EXIF 元数据（拍摄日期、相机型号等）
+- **事件打包** — 将完整事件（原图、RAW、编辑版本、版本顺序与事件元数据）导出为 PhotoPeek 事件包，并校验后导入
 - **多版本管理** — 同一照片支持多个版本（RAW + JPEG 自动合并、上传编辑版本），桌面端与 Web 端均支持版本对比（并排/滑动/切换）
 - **快速浏览** — 虚拟网格（react-virtuoso）流畅浏览大量照片，支持 Loupe 大图预览
 - **标签系统** — 为照片添加彩色标签，支持按标签筛选
 - **缩略图缓存** — 自动生成并缓存缩略图，加速浏览
+- **缓存自修复** — 打开事件时检查缺失或路径失效的缩略图，在后台逐张重建并动态刷新
 - **回收站** — 软删除照片，可恢复或永久清空
 - **局域网共享** — 一键启动 HTTP + WebSocket 共享，同网络设备浏览器即可查看
 - **公网共享** — 通过 Cloudflare Tunnel 生成公网 HTTPS 地址，无需端口转发，任意网络均可访问
@@ -143,23 +145,66 @@ pnpm run dev
 
 ```bash
 # 仅编译（生成 out/ 目录，不打包安装包）
-pnpm run build
+npm run build
 
-# 编译并打包为安装包（各平台）
-pnpm run build:win     # Windows (NSIS 安装程序 .exe)
-pnpm run build:mac     # macOS (DMG 安装包 .dmg)
-pnpm run build:linux   # Linux (AppImage / snap / deb)
+# Windows x64 便携包（ZIP）
+npm run build:win
+
+# Windows x64 安装包（在 Windows 上执行；使用 IExpress 自解压 ZIP，不使用 NSIS）
+powershell -ExecutionPolicy Bypass -File scripts/build-iexpress-installer.ps1
+
+# macOS Apple Silicon（M1/M2/M3/M4；必须在 macOS 主机上执行）
+npm run build:mac-arm64
+
+# Linux（AppImage / snap / deb）
+npm run build:linux
 ```
 
 各平台构建产物输出在 `dist/` 目录：
 
 | 命令 | 输出文件 | 说明 |
 |------|---------|------|
-| `build:win` | `dist/photopeek-*-setup.exe` | Windows 安装程序 |
-| `build:mac` | `dist/photopeek-*.dmg` | macOS DMG 镜像 |
-| `build:linux` | `dist/photopeek-*.AppImage` | Linux AppImage 便携版 |
+| `npm run build:win` | `dist/photopeek-<版本>-win-x64.zip` | Windows x64 便携版 |
+| `scripts/build-iexpress-installer.ps1` | `dist/photopeek-<版本>-win-x64-setup.exe` | Windows x64 安装版；需要先生成对应 ZIP |
+| `npm run build:mac-arm64` | `dist/photopeek-<版本>-mac-arm64.zip` | macOS Apple Silicon 便携包 |
+| `npm run build:linux` | `dist/photopeek-<版本>.*` | Linux AppImage / snap / deb |
 
-> Windows 构建所需 Electron 二进制已配置为使用本地 `node_modules/electron/dist`，无需从网络下载。
+`npm run build:mac-arm64` 会先执行类型检查与生产编译，再由 electron-builder 下载/打包 arm64 Electron 运行时。macOS 构建不能从 Windows 跨平台完成，请在 M 系列 Mac 或 macOS Apple Silicon CI runner 上执行。
+
+### macOS M 系列芯片后续编译
+
+在 M 系列 Mac 上：
+
+1. 安装 Node.js 20 或更高版本、Git，以及 Xcode Command Line Tools（运行 `xcode-select --install`）。
+2. 克隆项目并安装依赖：
+
+   ```bash
+   git clone https://github.com/RickXie43/photopeek.git
+   cd photopeek
+   npm ci
+   ```
+
+3. 构建 Apple Silicon 包：
+
+   ```bash
+   npm run build:mac-arm64
+   ```
+
+4. 取用 `dist/photopeek-<版本>-mac-arm64.zip`。解压后将 `photopeek.app` 移入「应用程序」即可。
+
+项目也提供 GitHub Actions 工作流：在仓库的 **Actions → Build macOS Apple Silicon → Run workflow** 手动运行，完成后从该次运行的 **Artifacts** 下载 `photopeek-mac-arm64`；发布 GitHub Release 后工作流也会自动生成同名 artifact。
+
+当前 macOS 构建目标是 ZIP，项目未配置 Apple Developer ID 签名或 notarization（`notarize: false`）。因此该包用于自用/测试；公开分发前应配置开发者签名和公证，否则 macOS 可能提示开发者身份无法验证。
+
+### 生成版本发布
+
+更新 `package.json` 及 `package-lock.json` 中的版本号后，可在 Windows 运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -SkipMac
+```
+
+该脚本生成 Windows x64 便携包、安装包和 SHA-256 清单，并整理到 `dist/<版本>/`。macOS ZIP 请在 Mac 或 GitHub Actions 上构建后放入同一目录。完整约定见 [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)。
 
 ### 推荐开发工具
 

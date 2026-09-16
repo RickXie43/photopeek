@@ -17,7 +17,9 @@ export function Dialog({
   title,
   children,
   className,
-  closeOnOverlayClick = true,
+  // Dialogs are intentionally modal: clicking outside must not discard edits.
+  // Callers can opt in for transient dialogs by passing true explicitly.
+  closeOnOverlayClick = false
 }: DialogProps): React.JSX.Element | null {
   const overlayRef = useRef<HTMLDivElement>(null)
 
@@ -44,9 +46,7 @@ export function Dialog({
         )}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            {title}
-          </h2>
+          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
           <button
             onClick={onClose}
             className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"

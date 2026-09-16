@@ -1,0 +1,22 @@
+name: Build macOS Apple Silicon
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:mac-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photopeek-mac-arm64
+          path: dist/photopeek-*-mac-arm64.zip

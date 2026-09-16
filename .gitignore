@@ -1,6 +1,9 @@
 node_modules
 dist
 out
+.electron-runtime
+build/iexpress-payload
+build/photopeek-iexpress.sed
 .DS_Store
 .eslintcache
 *.log*

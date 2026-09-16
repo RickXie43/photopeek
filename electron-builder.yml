@@ -2,7 +2,7 @@ appId: com.electron.app
 productName: photopeek
 directories:
   buildResources: build
-electronDist: node_modules/electron/dist
+compression: normal
 files:
   - '!**/.vscode/*'
   - '!src/*'
@@ -10,23 +10,50 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!node_modules/@img/sharp-darwin-x64/**'
+  - '!node_modules/@img/sharp-freebsd-*/**'
+  - '!node_modules/@img/sharp-linux-*/**'
+  - '!node_modules/@img/sharp-linuxmusl-*/**'
+  - '!node_modules/@img/sharp-wasm32/**'
+  - '!node_modules/@img/sharp-webcontainers-wasm32/**'
+  - '!node_modules/@img/sharp-win32-arm64/**'
+  - '!node_modules/@img/sharp-win32-ia32/**'
+  - '!node_modules/@img/sharp-libvips-darwin-x64/**'
+  - '!node_modules/@img/sharp-libvips-freebsd-*/**'
+  - '!node_modules/@img/sharp-libvips-linux-*/**'
+  - '!node_modules/@img/sharp-libvips-linuxmusl-*/**'
+  - '!node_modules/@img/sharp-libvips-win32-arm64/**'
+  - '!node_modules/@img/sharp-libvips-win32-ia32/**'
+  - '!node_modules/@img/sharp-libvips-dev/**'
+  - '!node_modules/@img/sharp-libvips-dev-wasm32/**'
 asarUnpack:
   - resources/**
   - node_modules/sharp/**
-  - node_modules/@img/**
-  - node_modules/.pnpm/@img+sharp*/**
+  - node_modules/@img/colour/**
+  - node_modules/@img/sharp-win32-x64/**
+  - node_modules/@img/sharp-darwin-arm64/**
+  - node_modules/@img/sharp-libvips-darwin-arm64/**
+  - node_modules/sql.js/dist/**
+  - node_modules/cloudflared/**
+  - node_modules/.pnpm/sql.js@*/node_modules/sql.js/dist/**
+  - node_modules/.pnpm/cloudflared@*/node_modules/cloudflared/**
 win:
   executableName: photopeek
-nsis:
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
-  allowElevation: true
+  # Do not build an NSIS installer. Its legacy extraction plugins have
+  # repeatedly failed while decompressing this large application. A standard
+  # ZIP is extracted by Windows Explorer (or PowerShell/.NET) and contains the
+  # exact same compiled application files.
+  target:
+    - target: zip
+      arch:
+        - x64
+  artifactName: ${name}-${version}-win-${arch}.${ext}
 mac:
+  target:
+    - target: zip
+      arch:
+        - arm64
+  artifactName: ${name}-${version}-mac-${arch}.${ext}
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.

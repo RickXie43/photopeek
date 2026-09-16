@@ -4,7 +4,12 @@ import { v4 as uuid } from 'uuid'
 import * as fs from 'fs'
 import * as path from 'path'
 import type { PhotoEvent } from '../../renderer/src/types/photo'
-import { getEventDir, getEventThumbnailsDir, generateFolderName, ensureUniqueFolderName } from '../services/library.service'
+import {
+  getEventDir,
+  getEventThumbnailsDir,
+  generateFolderName,
+  ensureUniqueFolderName
+} from '../services/library.service'
 
 function allEvents(db: ReturnType<typeof getDb>): PhotoEvent[] {
   const rows = db.exec(`
@@ -20,26 +25,33 @@ function allEvents(db: ReturnType<typeof getDb>): PhotoEvent[] {
       id: r.id as string,
       name: r.name as string,
       description: (r.description as string) || '',
-      folderName: (r.folder_name as string) || r.id as string,
+      folderName: (r.folder_name as string) || (r.id as string),
       coverPhotoId: (r.cover_photo_id as string) || null,
       photoCount: r.photo_count as number,
       createdAt: r.created_at as string,
-      updatedAt: r.updated_at as string,
+      updatedAt: r.updated_at as string
     }
   })
 }
 
 /** Write/update event.json metadata file inside the event folder */
-export function writeEventMetadata(eventId: string, folderName: string, data: {
-  name: string
-  description?: string
-  createdAt: string
-  updatedAt: string
-}): void {
+export function writeEventMetadata(
+  eventId: string,
+  folderName: string,
+  data: {
+    name: string
+    description?: string
+    createdAt: string
+    updatedAt: string
+  }
+): void {
   const eventDir = getEventDir(folderName)
   fs.mkdirSync(eventDir, { recursive: true })
   const metaPath = path.join(eventDir, 'event.json')
   const metadata = {
+    format: 'photopeek-event',
+    formatVersion: 1,
+    kind: 'event',
     id: eventId,
     folderName,
     name: data.name,
@@ -47,9 +59,11 @@ export function writeEventMetadata(eventId: string, folderName: string, data: {
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
     createdYear: new Date(data.createdAt).getFullYear(),
-    createdMonth: new Date(data.createdAt).getMonth() + 1,
+    createdMonth: new Date(data.createdAt).getMonth() + 1
   }
-  fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2), 'utf-8')
+  const tmpPath = metaPath + '.tmp'
+  fs.writeFileSync(tmpPath, JSON.stringify(metadata, null, 2), 'utf-8')
+  fs.renameSync(tmpPath, metaPath)
 }
 
 /**
@@ -62,12 +76,44 @@ export function syncEventJsonPhotos(eventId: string): void {
   const eventDir = getEventDir(folderName)
   const metaPath = path.join(eventDir, 'event.json')
   try {
-    if (!fs.existsSync(metaPath)) return
+    if (!fs.existsSync(metaPath)) {
+      const eventRows = db.exec(
+        'SELECT name, description, created_at, updated_at FROM events WHERE id = ?',
+        [eventId]
+      )
+      if (!eventRows.length || !eventRows[0].values.length) return
+      const columns = eventRows[0].columns
+      const row = eventRows[0].values[0]
+      writeEventMetadata(eventId, folderName, {
+        name: row[columns.indexOf('name')] as string,
+        description: row[columns.indexOf('description')] as string,
+        createdAt: row[columns.indexOf('created_at')] as string,
+        updatedAt: row[columns.indexOf('updated_at')] as string
+      })
+    }
     const raw = fs.readFileSync(metaPath, 'utf-8')
     const meta = JSON.parse(raw)
 
+    // Upgrade legacy event manifests in place while preserving all existing
+    // fields used by the sharing/web view.
+    let manifestChanged = false
+    if (meta.format !== 'photopeek-event') {
+      meta.format = 'photopeek-event'
+      manifestChanged = true
+    }
+    if (meta.formatVersion !== 1) {
+      meta.formatVersion = 1
+      manifestChanged = true
+    }
+    if (meta.kind !== 'event') {
+      meta.kind = 'event'
+      manifestChanged = true
+    }
+
     // Sync tag definitions
-    const tagRows = db.exec('SELECT id, name, color FROM tags WHERE event_id = ? ORDER BY name', [eventId])
+    const tagRows = db.exec('SELECT id, name, color FROM tags WHERE event_id = ? ORDER BY name', [
+      eventId
+    ])
     const tags: { id: string; name: string; color: string }[] = []
     if (tagRows.length > 0) {
       const { columns, values } = tagRows[0]
@@ -75,7 +121,7 @@ export function syncEventJsonPhotos(eventId: string): void {
         tags.push({
           id: row[columns.indexOf('id')] as string,
           name: row[columns.indexOf('name')] as string,
-          color: (row[columns.indexOf('color')] as string) || '#6366f1',
+          color: (row[columns.indexOf('color')] as string) || '#6366f1'
         })
       }
     }
@@ -95,11 +141,14 @@ export function syncEventJsonPhotos(eventId: string): void {
     }
 
     // Sync photos key info
-    const photoRows = db.exec(`
+    const photoRows = db.exec(
+      `
       SELECT id, file_name, file_size, width, height, rating, flag, color_label,
-             is_edited, needs_edit, metadata, deleted_at, created_at
+             is_edited, needs_edit, metadata, original_metadata, deleted_at, created_at, updated_at
       FROM photos WHERE event_id = ? ORDER BY created_at
-    `, [eventId])
+    `,
+      [eventId]
+    )
     const photos: Record<string, any> = {}
     if (photoRows.length > 0) {
       const { columns, values } = photoRows[0]
@@ -107,29 +156,41 @@ export function syncEventJsonPhotos(eventId: string): void {
         const id = row[columns.indexOf('id')] as string
         const mdStr = row[columns.indexOf('metadata')] as string | null
         let md: Record<string, any> = {}
-        try { if (mdStr) md = JSON.parse(mdStr) } catch {}
+        try {
+          if (mdStr) md = JSON.parse(mdStr)
+        } catch {}
 
         // Collect versions for this photo
         const vRows = db.exec(
-          `SELECT id, version_name, file_name, file_size, width, height,
+          `SELECT id, version_name, file_name, file_size, width, height, metadata,
                   is_original, uploaded_by, uploaded_at, created_at
            FROM photo_versions WHERE photo_id = ? ORDER BY is_original DESC, created_at ASC`,
-          [id],
+          [id]
         )
         let versions: any[] = []
         if (vRows.length > 0) {
           const { columns: vc, values: vv } = vRows[0]
-          versions = vv.map((vr) => ({
+          versions = vv.map((vr, versionIndex) => ({
             id: vr[vc.indexOf('id')],
             versionName: vr[vc.indexOf('version_name')],
             fileName: vr[vc.indexOf('file_name')],
             fileSize: vr[vc.indexOf('file_size')],
             width: vr[vc.indexOf('width')],
             height: vr[vc.indexOf('height')],
+            metadata: vr[vc.indexOf('metadata')]
+              ? (() => {
+                  try {
+                    return JSON.parse(vr[vc.indexOf('metadata')] as string)
+                  } catch {
+                    return null
+                  }
+                })()
+              : null,
             isOriginal: (vr[vc.indexOf('is_original')] as number) === 1,
             uploadedBy: vr[vc.indexOf('uploaded_by')] || null,
             uploadedAt: vr[vc.indexOf('uploaded_at')] || null,
             createdAt: vr[vc.indexOf('created_at')],
+            order: versionIndex
           }))
         }
 
@@ -139,23 +200,40 @@ export function syncEventJsonPhotos(eventId: string): void {
           width: row[columns.indexOf('width')] as number,
           height: row[columns.indexOf('height')] as number,
           rating: row[columns.indexOf('rating')] as number,
-          flag: row[columns.indexOf('flag')] as string || null,
-          colorLabel: row[columns.indexOf('color_label')] as string || null,
+          flag: (row[columns.indexOf('flag')] as string) || null,
+          colorLabel: (row[columns.indexOf('color_label')] as string) || null,
           isEdited: (row[columns.indexOf('is_edited')] as number) === 1,
           needsEdit: (row[columns.indexOf('needs_edit')] as number) === 1,
           dateTimeOriginal: md.dateTimeOriginal || null,
           cameraModel: md.cameraModel || null,
+          metadata: md,
+          originalMetadata: row[columns.indexOf('original_metadata')]
+            ? (() => {
+                try {
+                  return JSON.parse(row[columns.indexOf('original_metadata')] as string)
+                } catch {
+                  return null
+                }
+              })()
+            : null,
           tags: photoTagMap[id] || [],
           deletedAt: (row[columns.indexOf('deleted_at')] as string) || null,
           createdAt: (row[columns.indexOf('created_at')] as string) || null,
-          versions,
+          updatedAt: (row[columns.indexOf('updated_at')] as string) || null,
+          versions
         }
       }
     }
     meta.photos = photos
 
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
-    console.log(`[Event] Synced ${Object.keys(photos).length} photos to event.json for ${folderName}`)
+    if (manifestChanged || Object.keys(meta).length > 0) {
+      const tmpPath = metaPath + '.tmp'
+      fs.writeFileSync(tmpPath, JSON.stringify(meta, null, 2), 'utf-8')
+      fs.renameSync(tmpPath, metaPath)
+    }
+    console.log(
+      `[Event] Synced ${Object.keys(photos).length} photos to event.json for ${folderName}`
+    )
   } catch (err) {
     console.error('[Event] Failed to sync event.json photos:', err)
   }
@@ -191,7 +269,7 @@ export function registerEventHandlers(): void {
       name: data.name,
       description: data.description,
       createdAt: now,
-      updatedAt: now,
+      updatedAt: now
     })
 
     // Create thumbnails folder
@@ -211,115 +289,145 @@ export function registerEventHandlers(): void {
       photoCount: 0,
       coverPhotoId: null,
       createdAt: now,
-      updatedAt: now,
+      updatedAt: now
     }
   })
 
-  ipcMain.handle('events:update', async (_event, data: { id: string; name?: string; description?: string }) => {
-    const db = getDb()
-    const now = new Date().toISOString()
-    const folderName = getEventFolderName(data.id)
+  ipcMain.handle(
+    'events:update',
+    async (_event, data: { id: string; name?: string; description?: string }) => {
+      const db = getDb()
+      const now = new Date().toISOString()
+      const folderName = getEventFolderName(data.id)
 
-    if (data.name !== undefined) {
-      db.run('UPDATE events SET name = ?, updated_at = ? WHERE id = ?', [data.name, now, data.id])
-    }
-    if (data.description !== undefined) {
-      db.run('UPDATE events SET description = ?, updated_at = ? WHERE id = ?', [data.description, now, data.id])
-    }
-
-    // Update event.json metadata
-    const rows = db.exec('SELECT name, description, created_at FROM events WHERE id = ?', [data.id])
-    if (rows.length > 0 && rows[0].values.length > 0) {
-      const r = rows[0].values[0]
-      writeEventMetadata(data.id, folderName, {
-        name: (data.name ?? r[0]) as string,
-        description: (data.description ?? r[1]) as string,
-        createdAt: r[2] as string,
-        updatedAt: now,
-      })
-    }
-
-    persistDatabase()
-    syncEventJsonPhotos(data.id)
-    return { success: true }
-  })
-
-  ipcMain.handle('events:rename', async (_event, params: { id: string; newName: string }): Promise<{ success: boolean; folderName?: string; error?: string }> => {
-    const db = getDb()
-    const now = new Date().toISOString()
-
-    try {
-      // Get old folder name from DB
-      const oldRows = db.exec('SELECT folder_name, name FROM events WHERE id = ?', [params.id])
-      if (oldRows.length === 0 || oldRows[0].values.length === 0) {
-        return { success: false, error: '事件不存在' }
+      if (data.name !== undefined) {
+        db.run('UPDATE events SET name = ?, updated_at = ? WHERE id = ?', [data.name, now, data.id])
+      }
+      if (data.description !== undefined) {
+        db.run('UPDATE events SET description = ?, updated_at = ? WHERE id = ?', [
+          data.description,
+          now,
+          data.id
+        ])
       }
 
-      const oldFolderName = (oldRows[0].values[0][0] || params.id) as string
-
-      // Generate new folder name from the new event name, preserving original creation date
-      const createdRows = db.exec('SELECT created_at FROM events WHERE id = ?', [params.id])
-      const createdAt = (createdRows[0]?.values[0]?.[0] || now) as string
-      const rawNewFolder = generateFolderName(params.newName, createdAt)
-      const newFolderName = ensureUniqueFolderName(rawNewFolder)
-
-      // Rename event folder on disk
-      const oldEventDir = getEventDir(oldFolderName)
-      const newEventDir = getEventDir(newFolderName)
-      if (fs.existsSync(oldEventDir)) {
-        fs.renameSync(oldEventDir, newEventDir)
+      // Update event.json metadata
+      const rows = db.exec('SELECT name, description, created_at FROM events WHERE id = ?', [
+        data.id
+      ])
+      if (rows.length > 0 && rows[0].values.length > 0) {
+        const r = rows[0].values[0]
+        writeEventMetadata(data.id, folderName, {
+          name: (data.name ?? r[0]) as string,
+          description: (data.description ?? r[1]) as string,
+          createdAt: r[2] as string,
+          updatedAt: now
+        })
       }
-
-      // Rename thumbnails folder on disk
-      const oldThumbDir = getEventThumbnailsDir(oldFolderName)
-      const newThumbDir = getEventThumbnailsDir(newFolderName)
-      if (fs.existsSync(oldThumbDir)) {
-        fs.renameSync(oldThumbDir, newThumbDir)
-      }
-
-      // Update DB
-      db.run('UPDATE events SET name = ?, folder_name = ?, updated_at = ? WHERE id = ?',
-        [params.newName, newFolderName, now, params.id])
-
-      // Update file paths in photos table (folder name changed)
-      const oldPrefix = path.join('events', oldFolderName) + path.sep
-      const newPrefix = path.join('events', newFolderName) + path.sep
-      const photoRows = db.exec('SELECT id, file_path, thumbnail_path FROM photos WHERE event_id = ?', [params.id])
-      if (photoRows.length > 0) {
-        const { columns, values } = photoRows[0]
-        for (const row of values) {
-          const photoId = row[columns.indexOf('id')]
-          const oldFilePath = row[columns.indexOf('file_path')] as string
-          const oldThumbPath = row[columns.indexOf('thumbnail_path')] as string | null
-
-          if (oldFilePath) {
-            const newFilePath = oldFilePath.replace(oldPrefix, newPrefix)
-            db.run('UPDATE photos SET file_path = ?, updated_at = ? WHERE id = ?', [newFilePath, now, photoId])
-          }
-          if (oldThumbPath) {
-            const newThumbPath = oldThumbPath.replace(oldPrefix, newPrefix)
-            db.run('UPDATE photos SET thumbnail_path = ?, updated_at = ? WHERE id = ?', [newThumbPath, now, photoId])
-          }
-        }
-      }
-
-      // Update event.json
-      writeEventMetadata(params.id, newFolderName, {
-        name: params.newName,
-        description: '',
-        createdAt,
-        updatedAt: now,
-      })
 
       persistDatabase()
-      syncEventJsonPhotos(params.id)
-      return { success: true, folderName: newFolderName }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error('[Event] Rename failed:', msg)
-      return { success: false, error: msg }
+      syncEventJsonPhotos(data.id)
+      return { success: true }
     }
-  })
+  )
+
+  ipcMain.handle(
+    'events:rename',
+    async (
+      _event,
+      params: { id: string; newName: string }
+    ): Promise<{ success: boolean; folderName?: string; error?: string }> => {
+      const db = getDb()
+      const now = new Date().toISOString()
+
+      try {
+        // Get old folder name from DB
+        const oldRows = db.exec('SELECT folder_name, name FROM events WHERE id = ?', [params.id])
+        if (oldRows.length === 0 || oldRows[0].values.length === 0) {
+          return { success: false, error: '事件不存在' }
+        }
+
+        const oldFolderName = (oldRows[0].values[0][0] || params.id) as string
+
+        // Generate new folder name from the new event name, preserving original creation date
+        const createdRows = db.exec('SELECT created_at FROM events WHERE id = ?', [params.id])
+        const createdAt = (createdRows[0]?.values[0]?.[0] || now) as string
+        const rawNewFolder = generateFolderName(params.newName, createdAt)
+        const newFolderName = ensureUniqueFolderName(rawNewFolder)
+
+        // Rename event folder on disk
+        const oldEventDir = getEventDir(oldFolderName)
+        const newEventDir = getEventDir(newFolderName)
+        if (fs.existsSync(oldEventDir)) {
+          fs.renameSync(oldEventDir, newEventDir)
+        }
+
+        // Rename thumbnails folder on disk
+        const oldThumbDir = getEventThumbnailsDir(oldFolderName)
+        const newThumbDir = getEventThumbnailsDir(newFolderName)
+        if (fs.existsSync(oldThumbDir)) {
+          fs.renameSync(oldThumbDir, newThumbDir)
+        }
+
+        // Update DB
+        db.run('UPDATE events SET name = ?, folder_name = ?, updated_at = ? WHERE id = ?', [
+          params.newName,
+          newFolderName,
+          now,
+          params.id
+        ])
+
+        // Update file paths in photos table (folder name changed)
+        const oldPrefix = path.join('events', oldFolderName) + path.sep
+        const newPrefix = path.join('events', newFolderName) + path.sep
+        const photoRows = db.exec(
+          'SELECT id, file_path, thumbnail_path FROM photos WHERE event_id = ?',
+          [params.id]
+        )
+        if (photoRows.length > 0) {
+          const { columns, values } = photoRows[0]
+          for (const row of values) {
+            const photoId = row[columns.indexOf('id')]
+            const oldFilePath = row[columns.indexOf('file_path')] as string
+            const oldThumbPath = row[columns.indexOf('thumbnail_path')] as string | null
+
+            if (oldFilePath) {
+              const newFilePath = oldFilePath.replace(oldPrefix, newPrefix)
+              db.run('UPDATE photos SET file_path = ?, updated_at = ? WHERE id = ?', [
+                newFilePath,
+                now,
+                photoId
+              ])
+            }
+            if (oldThumbPath) {
+              const newThumbPath = oldThumbPath.replace(oldPrefix, newPrefix)
+              db.run('UPDATE photos SET thumbnail_path = ?, updated_at = ? WHERE id = ?', [
+                newThumbPath,
+                now,
+                photoId
+              ])
+            }
+          }
+        }
+
+        // Update event.json
+        writeEventMetadata(params.id, newFolderName, {
+          name: params.newName,
+          description: '',
+          createdAt,
+          updatedAt: now
+        })
+
+        persistDatabase()
+        syncEventJsonPhotos(params.id)
+        return { success: true, folderName: newFolderName }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[Event] Rename failed:', msg)
+        return { success: false, error: msg }
+      }
+    }
+  )
 
   ipcMain.handle('events:delete', async (_event, id: string) => {
     const db = getDb()
@@ -327,7 +435,10 @@ export function registerEventHandlers(): void {
 
     // Soft delete: set deleted_at on the event and all its photos
     db.run('UPDATE events SET deleted_at = ?, updated_at = ? WHERE id = ?', [now, now, id])
-    db.run('UPDATE photos SET deleted_at = ?, updated_at = ? WHERE event_id = ? AND deleted_at IS NULL', [now, now, id])
+    db.run(
+      'UPDATE photos SET deleted_at = ?, updated_at = ? WHERE event_id = ? AND deleted_at IS NULL',
+      [now, now, id]
+    )
     persistDatabase()
     syncEventJsonPhotos(id)
     return { success: true }
@@ -338,8 +449,14 @@ export function registerEventHandlers(): void {
     const now = new Date().toISOString()
 
     // Restore: clear deleted_at on the event and all its photos
-    db.run('UPDATE events SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL', [now, id])
-    db.run('UPDATE photos SET deleted_at = NULL, updated_at = ? WHERE event_id = ? AND deleted_at IS NOT NULL', [now, id])
+    db.run(
+      'UPDATE events SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL',
+      [now, id]
+    )
+    db.run(
+      'UPDATE photos SET deleted_at = NULL, updated_at = ? WHERE event_id = ? AND deleted_at IS NOT NULL',
+      [now, id]
+    )
     persistDatabase()
     syncEventJsonPhotos(id)
     return { success: true }
@@ -355,16 +472,19 @@ export function registerEventHandlers(): void {
 
     const { columns, values } = rows[0]
     return values.map((row) => {
-      const r = Object.fromEntries(columns.map((col, i) => [col, row[i]])) as Record<string, unknown>
+      const r = Object.fromEntries(columns.map((col, i) => [col, row[i]])) as Record<
+        string,
+        unknown
+      >
       return {
         id: r.id as string,
         name: r.name as string,
         description: (r.description as string) || '',
-        folderName: (r.folder_name as string) || r.id as string,
+        folderName: (r.folder_name as string) || (r.id as string),
         coverPhotoId: (r.cover_photo_id as string) || null,
         photoCount: r.photo_count as number,
         createdAt: r.created_at as string,
-        updatedAt: r.updated_at as string,
+        updatedAt: r.updated_at as string
       }
     })
   })
@@ -373,15 +493,27 @@ export function registerEventHandlers(): void {
   ipcMain.handle('events:getThumbnails', async (_event, eventId: string): Promise<string[]> => {
     const db = getDb()
     try {
-      const rows = db.exec(`
+      const rows = db.exec(
+        `
         SELECT v.thumbnail_path FROM photo_versions v
         JOIN photos p ON p.id = v.photo_id
         WHERE p.event_id = ? AND p.deleted_at IS NULL AND v.thumbnail_path IS NOT NULL
         ORDER BY v.is_original DESC, v.created_at ASC
-        LIMIT 4
-      `, [eventId])
+      `,
+        [eventId]
+      )
       if (rows.length === 0 || rows[0].values.length === 0) return []
-      return rows[0].values.map((r) => r[0] as string).filter(Boolean)
-    } catch { return [] }
+      // Do not return stale database paths; the renderer would otherwise keep
+      // broken sidebar images until the event is opened and repaired.
+      return rows[0].values
+        .map((r) => r[0] as string)
+        .filter(
+          (thumbnailPath): thumbnailPath is string =>
+            Boolean(thumbnailPath) && fs.existsSync(thumbnailPath)
+        )
+        .slice(0, 4)
+    } catch {
+      return []
+    }
   })
 }
