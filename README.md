@@ -1,6 +1,6 @@
 # PhotoPeek 📸
 
-> `v2.0.4` — [GitHub](https://github.com/RickXie43/photopeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
+> `v2.0.6` — [GitHub](https://github.com/RickXie43/photopeek) | 基于 Electron 的本地照片管理与共享应用。导入照片、创建事件、打标签、在局域网或公网中实时共享浏览。
 
 ## 功能特性
 
@@ -12,6 +12,7 @@
 - **标签系统** — 为照片添加彩色标签，支持按标签筛选
 - **缩略图缓存** — 自动生成并缓存缩略图，加速浏览
 - **缓存自修复** — 打开事件时检查缺失或路径失效的缩略图，在后台逐张重建并动态刷新
+- **标签自修复** — 昵称标签可反复添加/取消；启动、切换照片库和打开事件时自动检查失效关联与同名重复标签，修复前保存数据库备份
 - **回收站** — 软删除照片，可恢复或永久清空
 - **局域网共享** — 一键启动 HTTP + WebSocket 共享，同网络设备浏览器即可查看
 - **公网共享** — 通过 Cloudflare Tunnel 生成公网 HTTPS 地址，无需端口转发，任意网络均可访问
@@ -95,6 +96,10 @@
 | `h` / `l`（Web 大图） | 切换上一张/下一张照片 |
 | `j` / `k`（Web 大图） | 循环切换当前照片的版本 |
 
+桌面端先在设置中填写昵称，再在大图模式按 `Space` 添加或取消本人标签。修改昵称立即生效；长按空格不会反复打标，快速连续按键按顺序处理。
+
+标签定义即使暂时没有照片使用也会保留，下次自动复用。自动修复前的数据库保存在照片库的 `backups/tag-repair/`；事件的标签信息与 `event.json` 不一致时以数据库为准更新，损坏的 JSON 先另存为同目录的 `event.json.corrupt-*.bak` 再重建。
+
 ## 桌面端快捷键
 
 | 快捷键 | 功能 |
@@ -123,6 +128,12 @@
 
 - Node.js >= 20
 - pnpm（推荐）或 npm
+
+标签与事件 JSON 的回归检查（使用 Node.js 22.18 或更高版本）：
+
+```bash
+npm run test:tags
+```
 
 ### 安装依赖
 
@@ -200,7 +211,7 @@ npm run build:linux
 
 4. 安装或更新：双击 DMG，将 `photopeek.app` 拖到「应用程序」。更新现有版本时先退出 PhotoPeek，再确认替换旧版。
 
-项目通过 GitHub Actions 自动构建并发布多平台版本。把版本号更新到 `package.json` 和 `package-lock.json` 后，提交并推送版本标签（例如 `v2.0.5`），工作流会分别在 Windows 和 Apple Silicon macOS runner 上构建，校验所有产物后将 Windows ZIP、Windows 安装包、macOS ZIP、macOS DMG 和 SHA-256 清单一起发布到同一个 GitHub Release。任一平台构建失败时不会发布 Release。工作流也可在 **Actions → Build and publish release → Run workflow** 中手动执行已有标签。
+项目通过 GitHub Actions 自动构建并发布多平台版本。把版本号更新到 `package.json` 和 `package-lock.json` 后，提交并推送版本标签（例如 `v2.0.6`），工作流会分别在 Windows 和 Apple Silicon macOS runner 上执行标签回归测试并构建，校验所有产物后将 Windows ZIP、Windows 安装包、macOS ZIP、macOS DMG 和 SHA-256 清单一起发布到同一个 GitHub Release。任一平台构建失败时不会发布 Release。工作流也可在 **Actions → Build and publish release → Run workflow** 中手动执行已有标签。
 
 当前 macOS DMG 未配置 Apple Developer ID 签名或 notarization（`notarize: false`），适用于自用和测试。公开分发前应配置开发者签名和公证，否则 macOS 可能提示开发者身份无法验证。
 
