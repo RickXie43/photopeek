@@ -53,7 +53,11 @@ export function SettingsDialog({
     try {
       if (!settings.libraryPath.trim()) throw new Error('请选择照片库目录')
       const previousPath = await window.electron.ipcRenderer.invoke('settings:getLibraryPath')
-      await window.electron.ipcRenderer.invoke('settings:update', settings)
+      const savedSettings = await window.electron.ipcRenderer.invoke('settings:update', {
+        ...settings,
+        nickname: settings.nickname.trim()
+      })
+      window.dispatchEvent(new CustomEvent('settings-changed', { detail: savedSettings }))
       onClose()
       // Remount the renderer to discard old selections, requests and image caches.
       // The main process and newly opened database remain running.

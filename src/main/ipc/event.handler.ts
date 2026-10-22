@@ -5,6 +5,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { PhotoEvent } from '../../renderer/src/types/photo'
 import {
+  eventTagMetadataMatches,
+  readEventMetadataFile,
+  writeEventMetadataFile,
+  type EventTagSnapshot
+} from '../services/event-metadata.service'
+import {
   getEventDir,
   getEventThumbnailsDir,
   generateFolderName,
@@ -61,53 +67,84 @@ export function writeEventMetadata(
     createdYear: new Date(data.createdAt).getFullYear(),
     createdMonth: new Date(data.createdAt).getMonth() + 1
   }
-  const tmpPath = metaPath + '.tmp'
-  fs.writeFileSync(tmpPath, JSON.stringify(metadata, null, 2), 'utf-8')
-  fs.renameSync(tmpPath, metaPath)
+  writeEventMetadataFile(metaPath, metadata)
+}
+
+function eventTagSnapshot(eventId: string): EventTagSnapshot {
+  const db = getDb()
+  const tags = (
+    db.exec('SELECT id, name, color FROM tags WHERE event_id = ? ORDER BY name, id', [eventId])[0]
+      ?.values || []
+  ).map((row) => ({ id: String(row[0]), name: String(row[1]), color: String(row[2] || '#6366f1') }))
+  const photoTags: Record<string, string[]> = Object.fromEntries(
+    (db.exec('SELECT id FROM photos WHERE event_id = ?', [eventId])[0]?.values || []).map((row) => [
+      String(row[0]),
+      []
+    ])
+  )
+  for (const row of db.exec(
+    `SELECT pt.photo_id, pt.tag_id FROM photo_tags pt
+    JOIN photos p ON p.id = pt.photo_id JOIN tags t ON t.id = pt.tag_id
+    WHERE p.event_id = ? AND t.event_id = p.event_id ORDER BY pt.tag_id`,
+    [eventId]
+  )[0]?.values || []) {
+    photoTags[String(row[0])].push(String(row[1]))
+  }
+  return { eventId, tags, photoTags }
+}
+
+/** Event entry checks the manifest against the database without rewriting healthy files. */
+export function ensureEventTagMetadata(eventId: string): void {
+  try {
+    const db = getDb()
+    if (!db.exec('SELECT id FROM events WHERE id = ?', [eventId])[0]?.values.length) return
+    const metaPath = path.join(getEventDir(getEventFolderName(eventId)), 'event.json')
+    let metadata: unknown
+    try {
+      metadata = JSON.parse(fs.readFileSync(metaPath, 'utf8'))
+    } catch {
+      syncEventJsonPhotos(eventId)
+      return
+    }
+    if (!eventTagMetadataMatches(metadata, eventTagSnapshot(eventId))) syncEventJsonPhotos(eventId)
+  } catch (err) {
+    console.error('[Event] Failed to check event.json tags:', err)
+  }
 }
 
 /**
  * Sync all photo key info + tag associations into event.json.
  * This enables lightweight sync: text metadata can be shared without photo files.
  */
-export function syncEventJsonPhotos(eventId: string): void {
+export function syncEventJsonPhotos(eventId: string): boolean {
   const db = getDb()
   const folderName = getEventFolderName(eventId)
   const eventDir = getEventDir(folderName)
   const metaPath = path.join(eventDir, 'event.json')
   try {
-    if (!fs.existsSync(metaPath)) {
-      const eventRows = db.exec(
-        'SELECT name, description, created_at, updated_at FROM events WHERE id = ?',
-        [eventId]
-      )
-      if (!eventRows.length || !eventRows[0].values.length) return
-      const columns = eventRows[0].columns
-      const row = eventRows[0].values[0]
-      writeEventMetadata(eventId, folderName, {
-        name: row[columns.indexOf('name')] as string,
-        description: row[columns.indexOf('description')] as string,
-        createdAt: row[columns.indexOf('created_at')] as string,
-        updatedAt: row[columns.indexOf('updated_at')] as string
-      })
-    }
-    const raw = fs.readFileSync(metaPath, 'utf-8')
-    const meta = JSON.parse(raw)
-
-    // Upgrade legacy event manifests in place while preserving all existing
-    // fields used by the sharing/web view.
-    let manifestChanged = false
-    if (meta.format !== 'photopeek-event') {
-      meta.format = 'photopeek-event'
-      manifestChanged = true
-    }
-    if (meta.formatVersion !== 1) {
-      meta.formatVersion = 1
-      manifestChanged = true
-    }
-    if (meta.kind !== 'event') {
-      meta.kind = 'event'
-      manifestChanged = true
+    const eventRows = db.exec(
+      'SELECT name, description, created_at, updated_at FROM events WHERE id = ?',
+      [eventId]
+    )
+    if (!eventRows[0]?.values.length) return false
+    const event = Object.fromEntries(
+      eventRows[0].columns.map((column, i) => [column, eventRows[0].values[0][i]])
+    )
+    fs.mkdirSync(eventDir, { recursive: true })
+    // A valid file may carry extension fields; canonical data always comes from DB.
+    const meta: Record<string, any> = {
+      ...readEventMetadataFile(metaPath, eventId),
+      format: 'photopeek-event',
+      formatVersion: 1,
+      kind: 'event',
+      id: eventId,
+      folderName,
+      name: event.name,
+      description: event.description || '',
+      createdAt: event.created_at,
+      updatedAt: event.updated_at,
+      createdYear: new Date(String(event.created_at)).getFullYear(),
+      createdMonth: new Date(String(event.created_at)).getMonth() + 1
     }
 
     // Sync tag definitions
@@ -128,7 +165,12 @@ export function syncEventJsonPhotos(eventId: string): void {
     meta.tags = tags
 
     // Build photoId→[tagId] map
-    const ptRows = db.exec('SELECT photo_id, tag_id FROM photo_tags')
+    const ptRows = db.exec(
+      `SELECT pt.photo_id, pt.tag_id FROM photo_tags pt
+      JOIN photos p ON p.id = pt.photo_id JOIN tags t ON t.id = pt.tag_id
+      WHERE p.event_id = ? AND t.event_id = p.event_id ORDER BY pt.tag_id`,
+      [eventId]
+    )
     const photoTagMap: Record<string, string[]> = {}
     if (ptRows.length > 0) {
       const { columns, values } = ptRows[0]
@@ -226,16 +268,14 @@ export function syncEventJsonPhotos(eventId: string): void {
     }
     meta.photos = photos
 
-    if (manifestChanged || Object.keys(meta).length > 0) {
-      const tmpPath = metaPath + '.tmp'
-      fs.writeFileSync(tmpPath, JSON.stringify(meta, null, 2), 'utf-8')
-      fs.renameSync(tmpPath, metaPath)
-    }
+    writeEventMetadataFile(metaPath, meta)
     console.log(
       `[Event] Synced ${Object.keys(photos).length} photos to event.json for ${folderName}`
     )
+    return true
   } catch (err) {
     console.error('[Event] Failed to sync event.json photos:', err)
+    return false
   }
 }
 

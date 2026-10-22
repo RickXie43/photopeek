@@ -5,7 +5,9 @@ import * as path from 'path'
 import * as os from 'os'
 import { BrowserWindow, app } from 'electron'
 import { v4 as uuid } from 'uuid'
-import { getDb } from '../db/connection'
+import { getDb, persistDatabase, repairDatabaseTags } from '../db/connection'
+import { toggleNicknameTag } from './tag.service'
+import { withPersistedTags } from './tag-persistence.service'
 import { getEventDir, getLibraryPath } from './library.service'
 import { syncEventJsonPhotos } from '../ipc/event.handler'
 import { generateThumbnail, generateMedium, getRawPreviewBuffer } from './thumbnail.service'
@@ -2567,45 +2569,14 @@ function handleWsMessage(
           break
         }
       }
-      const nickname = actingUser?.nickname || msg.userId || 'Unknown'
+      const nickname = (actingUser?.nickname || msg.userId || 'Unknown').trim()
       const photoId = msg.photoId
       if (!photoId) break
 
       const db = getDb()
-      const existingTag = db.exec(
-        'SELECT id, name, color FROM tags WHERE event_id = ? AND name = ?',
-        [eventId, nickname]
-      )
-      let tagId: string
-
-      if (existingTag.length > 0 && existingTag[0].values.length > 0) {
-        tagId = existingTag[0].values[0][0] as string
-      } else {
-        // Create a new tag with the nickname as tag name
-        tagId = uuid()
-        const color = nicknameTagColor(nickname)
-        const now = new Date().toISOString()
-        db.run(
-          'INSERT OR IGNORE INTO tags (id, event_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-          [tagId, eventId, nickname, color, now]
-        )
-      }
-
-      // Toggle the tag on the photo
-      const existing = db.exec('SELECT 1 FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [
-        photoId,
-        tagId
-      ])
-      const has = existing.length > 0 && existing[0].values.length > 0
-
-      if (has) {
-        db.run('DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [photoId, tagId])
-      } else {
-        db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [
-          photoId,
-          tagId
-        ])
-      }
+      repairDatabaseTags(eventId)
+      const { hasTag } = withPersistedTags(db, () => toggleNicknameTag(db, { photoId, eventId, nickname }), persistDatabase)
+      const has = !hasTag
 
       // Sync event.json
       syncEventJsonPhotos(eventId)
@@ -2732,16 +2703,6 @@ function findFileInDir(dir: string, fileName: string): string | null {
     }
   } catch {}
   return null
-}
-
-/** Generate a deterministic color from a nickname string */
-function nicknameTagColor(nickname: string): string {
-  let hash = 0
-  for (let i = 0; i < nickname.length; i++) {
-    hash = nickname.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  const hue = ((hash % 360) + 360) % 360
-  return `hsl(${hue}, 55%, 55%)`
 }
 
 function applyRemoteAction(eventId: string, msg: any): void {

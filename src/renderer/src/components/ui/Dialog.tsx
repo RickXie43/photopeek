@@ -32,6 +32,9 @@ export function Dialog({
   return (
     <div
       ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={(e) => {
         if (closeOnOverlayClick && e.target === overlayRef.current) onClose()

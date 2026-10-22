@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { usePhotoStore } from '../../stores/photoStore'
 import { useEventStore } from '../../stores/eventStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -10,11 +10,15 @@ export function InspectorPanel(): React.JSX.Element {
   const { selectedEventId } = useEventStore()
   const { sortBy } = useUIStore()
   const selectedPhoto = photos.find((p) => selectedPhotoIds.has(p.id))
+  const selectedPhotoIdRef = useRef(selectedPhoto?.id)
+  selectedPhotoIdRef.current = selectedPhoto?.id
+  const tagAddPendingRef = useRef(false)
   const [eventTags, setEventTags] = useState<{ id: string; name: string; color: string }[]>([])
   const [photoTags, setPhotoTags] = useState<{ id: string; name: string; color: string }[]>([])
   const [filterTagIds, setFilterTagIds] = useState<Set<string>>(new Set())
   const [showAddTag, setShowAddTag] = useState(false)
   const [newTagName, setNewTagName] = useState('')
+  const [tagError, setTagError] = useState('')
   const [filterVersionNames, setFilterVersionNames] = useState<Set<string>>(new Set())
   const [eventVersionNames, setEventVersionNames] = useState<string[]>([])
 
@@ -24,17 +28,27 @@ export function InspectorPanel(): React.JSX.Element {
       setEventTags([])
       return
     }
+    let cancelled = false
+    let latestRequest = 0
     const loadTags = (): void => {
+      const request = ++latestRequest
       window.electron.ipcRenderer
         .invoke('tags:list', selectedEventId)
         .then((r: unknown) => {
-          setEventTags(r as { id: string; name: string; color: string }[])
+          if (!cancelled && request === latestRequest) {
+            setEventTags(r as { id: string; name: string; color: string }[])
+          }
         })
-        .catch(() => setEventTags([]))
+        .catch(() => {
+          if (!cancelled && request === latestRequest) setEventTags([])
+        })
     }
     loadTags()
     window.addEventListener('refresh-tags', loadTags)
-    return () => window.removeEventListener('refresh-tags', loadTags)
+    return () => {
+      cancelled = true
+      window.removeEventListener('refresh-tags', loadTags)
+    }
   }, [selectedEventId])
 
   // Load version names for current event (for version filter)
@@ -51,16 +65,32 @@ export function InspectorPanel(): React.JSX.Element {
 
   // Load tags for selected photo
   useEffect(() => {
+    setTagError('')
     if (!selectedPhoto) {
       setPhotoTags([])
       return
     }
-    window.electron.ipcRenderer
-      .invoke('tags:listForPhoto', selectedPhoto.id)
-      .then((r: unknown) => {
-        setPhotoTags(r as { id: string; name: string; color: string }[])
-      })
-      .catch(() => setPhotoTags([]))
+    let cancelled = false
+    let latestRequest = 0
+    const loadTags = (): void => {
+      const request = ++latestRequest
+      window.electron.ipcRenderer
+        .invoke('tags:listForPhoto', selectedPhoto.id)
+        .then((r: unknown) => {
+          if (!cancelled && request === latestRequest) {
+            setPhotoTags(r as { id: string; name: string; color: string }[])
+          }
+        })
+        .catch(() => {
+          if (!cancelled && request === latestRequest) setPhotoTags([])
+        })
+    }
+    loadTags()
+    window.addEventListener('refresh-tags', loadTags)
+    return () => {
+      cancelled = true
+      window.removeEventListener('refresh-tags', loadTags)
+    }
   }, [selectedPhoto?.id])
 
   // Filter photos when filterTagIds or filterVersionNames changes
@@ -381,26 +411,41 @@ export function InspectorPanel(): React.JSX.Element {
                       setNewTagName('')
                       return
                     }
-                    if (e.key !== 'Enter' || !newTagName.trim() || !selectedPhoto) return
+                    if (
+                      e.key !== 'Enter' || !newTagName.trim() || !selectedPhoto ||
+                      tagAddPendingRef.current
+                    ) return
+                    const pid = selectedPhoto.id
+                    const eid = selectedPhoto.eventId
+                    tagAddPendingRef.current = true
+                    setTagError('')
                     try {
                       const created = (await window.electron.ipcRenderer.invoke('tags:create', {
-                        eventId: selectedPhoto.eventId,
+                        eventId: eid,
                         name: newTagName.trim()
                       })) as { id: string; name: string; color: string; error?: string }
-                      if (created.error) return
-                      await window.electron.ipcRenderer.invoke('tags:addToPhoto', {
-                        photoId: selectedPhoto.id,
+                      if (created.error) throw new Error(created.error)
+                      const result = (await window.electron.ipcRenderer.invoke('tags:addToPhoto', {
+                        photoId: pid,
                         tagId: created.id,
-                        eventId: selectedPhoto.eventId
-                      })
-                      setPhotoTags((prev) => [
-                        ...prev,
-                        { id: created.id, name: created.name, color: created.color }
-                      ])
+                        eventId: eid
+                      })) as { success: boolean }
+                      if (!result.success) throw new Error('添加标签失败，请重试')
+                      const tags = (await window.electron.ipcRenderer.invoke(
+                        'tags:listForPhoto', pid
+                      )) as { id: string; name: string; color: string }[]
+                      if (selectedPhotoIdRef.current === pid) setPhotoTags(tags)
                       setNewTagName('')
                       setShowAddTag(false)
                       window.dispatchEvent(new Event('refresh-tags'))
-                    } catch {}
+                    } catch (error) {
+                      console.error('[InspectorPanel] Failed to add tag:', error)
+                      if (selectedPhotoIdRef.current === pid) {
+                        setTagError(error instanceof Error ? error.message : '添加标签失败，请重试')
+                      }
+                    } finally {
+                      tagAddPendingRef.current = false
+                    }
                   }}
                   onBlur={() => {
                     setShowAddTag(false)
@@ -419,6 +464,7 @@ export function InspectorPanel(): React.JSX.Element {
               </div>
             )}
           </div>
+          {tagError && <p role="alert" className="mt-1 text-xs text-red-500">{tagError}</p>}
         </div>
       </div>
 

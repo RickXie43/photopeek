@@ -1,18 +1,9 @@
 import { ipcMain } from 'electron'
-import { getDb, persistDatabase } from '../db/connection'
-import { syncEventJsonPhotos } from './event.handler'
-import { v4 as uuid } from 'uuid'
+import { getDb, persistDatabase, repairDatabaseTags } from '../db/connection'
+import { syncEventJsonPhotos, ensureEventTagMetadata } from './event.handler'
+import { getOrCreateTag, listEventTags, listPhotoTags, setPhotoTag, toggleNicknameTag } from '../services/tag.service'
+import { withPersistedTags } from '../services/tag-persistence.service'
 import type { Tag, Photo } from '../../renderer/src/types/photo'
-
-/** Generate a deterministic color from a tag name */
-function tagColor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  const hue = ((hash % 360) + 360) % 360
-  return `hsl(${hue}, 55%, 50%)`
-}
 
 function deserializePhoto(row: Record<string, unknown>): Photo {
   return {
@@ -38,52 +29,11 @@ function deserializePhoto(row: Record<string, unknown>): Photo {
 }
 
 function allTagsForEvent(db: ReturnType<typeof getDb>, eventId: string): Tag[] {
-  // Only return tags that are associated with at least one non-deleted photo
-  const rows = db.exec(
-    `
-    SELECT DISTINCT t.* FROM tags t
-    INNER JOIN photo_tags pt ON pt.tag_id = t.id
-    INNER JOIN photos p ON p.id = pt.photo_id AND p.deleted_at IS NULL
-    WHERE t.event_id = ? ORDER BY t.name ASC
-  `,
-    [eventId]
-  )
-  if (rows.length === 0) return []
-  const { columns, values } = rows[0]
-  return values.map((row) => {
-    const r = Object.fromEntries(columns.map((col, i) => [col, row[i]])) as Record<string, unknown>
-    return {
-      id: r.id as string,
-      eventId: r.event_id as string,
-      name: r.name as string,
-      color: (r.color as string) || '#6366f1',
-      createdAt: r.created_at as string
-    }
-  })
+  return listEventTags(db, eventId)
 }
 
 function tagsForPhoto(db: ReturnType<typeof getDb>, photoId: string): Tag[] {
-  const rows = db.exec(
-    `
-    SELECT t.* FROM tags t
-    INNER JOIN photo_tags pt ON pt.tag_id = t.id
-    WHERE pt.photo_id = ?
-    ORDER BY t.name ASC
-  `,
-    [photoId]
-  )
-  if (rows.length === 0) return []
-  const { columns, values } = rows[0]
-  return values.map((row) => {
-    const r = Object.fromEntries(columns.map((col, i) => [col, row[i]])) as Record<string, unknown>
-    return {
-      id: r.id as string,
-      eventId: r.event_id as string,
-      name: r.name as string,
-      color: (r.color as string) || '#6366f1',
-      createdAt: r.created_at as string
-    }
-  })
+  return listPhotoTags(db, photoId)
 }
 
 /** Sync all event data (tags + photos info) to event.json */
@@ -93,12 +43,16 @@ function syncEventJson(eventId: string): void {
 
 export function registerTagHandlers(): void {
   ipcMain.handle('tags:list', async (_event, eventId: string): Promise<Tag[]> => {
+    repairDatabaseTags(eventId)
+    ensureEventTagMetadata(eventId)
     const db = getDb()
     return allTagsForEvent(db, eventId)
   })
 
   ipcMain.handle('tags:listForPhoto', async (_event, photoId: string): Promise<Tag[]> => {
     const db = getDb()
+    const eventId = db.exec('SELECT event_id FROM photos WHERE id = ?', [photoId])[0]?.values[0]?.[0]
+    if (typeof eventId === 'string') repairDatabaseTags(eventId)
     return tagsForPhoto(db, photoId)
   })
 
@@ -109,33 +63,15 @@ export function registerTagHandlers(): void {
       data: { eventId: string; name: string; color?: string }
     ): Promise<Tag | { error: string }> => {
       const db = getDb()
-      const name = data.name.trim()
-      if (!name) return { error: '标签名不能为空' }
-
-      // Check for duplicate names in this event
-      const existing = db.exec('SELECT id FROM tags WHERE event_id = ? AND name = ?', [
-        data.eventId,
-        name
-      ])
-      if (existing.length > 0 && existing[0].values.length > 0) {
-        return { error: '该事件中已存在同名标签' }
+      repairDatabaseTags(data.eventId)
+      let tag: Tag
+      try {
+        tag = withPersistedTags(db, () => getOrCreateTag(db, data.eventId, data.name, data.color), persistDatabase)
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : '创建标签失败' }
       }
-
-      const id = uuid()
-      const now = new Date().toISOString()
-      const color = data.color || tagColor(name)
-
-      db.run('INSERT INTO tags (id, event_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)', [
-        id,
-        data.eventId,
-        name,
-        color,
-        now
-      ])
-      persistDatabase()
       syncEventJson(data.eventId)
-
-      return { id, eventId: data.eventId, name, color, createdAt: now }
+      return tag
     }
   )
 
@@ -143,9 +79,12 @@ export function registerTagHandlers(): void {
     'tags:delete',
     async (_event, data: { eventId: string; tagId: string }): Promise<{ success: boolean }> => {
       const db = getDb()
-      db.run('DELETE FROM photo_tags WHERE tag_id = ?', [data.tagId])
-      db.run('DELETE FROM tags WHERE id = ?', [data.tagId])
-      persistDatabase()
+      const tag = db.exec('SELECT id FROM tags WHERE id = ? AND event_id = ?', [data.tagId, data.eventId])
+      if (!tag.length || !tag[0].values.length) return { success: false }
+      withPersistedTags(db, () => {
+        db.run('DELETE FROM photo_tags WHERE tag_id = ?', [data.tagId])
+        db.run('DELETE FROM tags WHERE id = ?', [data.tagId])
+      }, persistDatabase)
       syncEventJson(data.eventId)
       return { success: true }
     }
@@ -158,17 +97,10 @@ export function registerTagHandlers(): void {
       data: { photoId: string; tagId: string; eventId: string }
     ): Promise<{ success: boolean }> => {
       const db = getDb()
-      try {
-        db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [
-          data.photoId,
-          data.tagId
-        ])
-        persistDatabase()
-        syncEventJson(data.eventId)
-        return { success: true }
-      } catch {
-        return { success: false }
-      }
+      repairDatabaseTags(data.eventId)
+      withPersistedTags(db, () => setPhotoTag(db, data.photoId, data.eventId, data.tagId, true), persistDatabase)
+      syncEventJson(data.eventId)
+      return { success: true }
     }
   )
 
@@ -179,8 +111,8 @@ export function registerTagHandlers(): void {
       data: { photoId: string; tagId: string; eventId: string }
     ): Promise<{ success: boolean }> => {
       const db = getDb()
-      db.run('DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [data.photoId, data.tagId])
-      persistDatabase()
+      repairDatabaseTags(data.eventId)
+      withPersistedTags(db, () => setPhotoTag(db, data.photoId, data.eventId, data.tagId, false), persistDatabase)
       syncEventJson(data.eventId)
       return { success: true }
     }
@@ -193,26 +125,24 @@ export function registerTagHandlers(): void {
       data: { photoId: string; tagId: string; eventId: string }
     ): Promise<{ hasTag: boolean }> => {
       const db = getDb()
-      const existing = db.exec('SELECT 1 FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [
-        data.photoId,
-        data.tagId
-      ])
-      const hasTag = existing.length > 0 && existing[0].values.length > 0
-
-      if (hasTag) {
-        db.run('DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?', [
-          data.photoId,
-          data.tagId
-        ])
-      } else {
-        db.run('INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)', [
-          data.photoId,
-          data.tagId
-        ])
-      }
-      persistDatabase()
+      repairDatabaseTags(data.eventId)
+      const hasTag = withPersistedTags(db, () => setPhotoTag(db, data.photoId, data.eventId, data.tagId), persistDatabase)
       syncEventJson(data.eventId)
-      return { hasTag: !hasTag }
+      return { hasTag }
+    }
+  )
+
+  ipcMain.handle(
+    'tags:toggleNicknameOnPhoto',
+    async (_event, data: { photoId: string; eventId: string; nickname: string }) => {
+      repairDatabaseTags(data.eventId)
+      const db = getDb()
+      const result = withPersistedTags(db, () => toggleNicknameTag(db, data), persistDatabase)
+      const synced = syncEventJsonPhotos(data.eventId)
+      return {
+        ...result,
+        warning: synced ? undefined : '标签已保存，事件信息暂未同步，下次打开事件会自动重试'
+      }
     }
   )
 

@@ -2,6 +2,10 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
 import { join, resolve, isAbsolute, dirname } from 'path'
 import * as fs from 'fs'
 import { app } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { exportDatabase } from './export'
+import { repairTagIntegrity, type TagRepairResult } from '../services/tag.service'
+import { withPersistedTags } from '../services/tag-persistence.service'
 import {
   getDbPath,
   getLibraryPath,
@@ -115,6 +119,7 @@ export async function getDatabase(): Promise<SqlJsDatabase> {
   db.run('PRAGMA journal_mode=WAL')
   db.run('PRAGMA foreign_keys=ON')
   await createTables(db)
+  repairTagsWithBackup(db, dbPath)
   const rebased = rebasePhotoPaths(db, getLibraryPath())
   if (rebased > 0) console.log(`[Library] Rebased ${rebased} photo/version paths on startup`)
   // Save initial schema
@@ -126,11 +131,38 @@ export function persistDatabase(): void {
   if (!db || !dbPath) return
   try {
     ensureLibraryStructure()
-    const data = db.export()
-    fs.writeFileSync(dbPath, Buffer.from(data))
+    const data = exportDatabase(db)
+    fs.writeFileSync(dbPath + '.tmp', Buffer.from(data))
+    fs.renameSync(dbPath + '.tmp', dbPath)
   } catch (err) {
     console.error('Failed to persist database:', err)
+    throw err
   }
+}
+
+function repairTagsWithBackup(database: SqlJsDatabase, filePath: string, eventId?: string): TagRepairResult {
+  const result = repairTagIntegrity(database, eventId, () => {
+    const backupDir = join(dirname(filePath), 'backups', 'tag-repair')
+    fs.mkdirSync(backupDir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupPath = join(backupDir, `photopeek-${stamp}-${randomUUID()}.db`)
+    fs.writeFileSync(backupPath, Buffer.from(exportDatabase(database)), { flag: 'wx' })
+    console.log(`[Tags] Saved pre-repair backup: ${backupPath}`)
+  })
+  if (result.changed) console.log('[Tags] Automatically repaired tag integrity:', result)
+  return result
+}
+
+/** Called on event entry and before tag mutations, as well as on library startup/switch. */
+export function repairDatabaseTags(eventId?: string): TagRepairResult {
+  const database = getDb()
+  let result: TagRepairResult
+  return withPersistedTags(database, () => {
+    result = repairTagsWithBackup(database, dbPath, eventId)
+    return result
+  }, () => {
+    if (result.changed) persistDatabase()
+  })
 }
 
 function createTables(db: SqlJsDatabase): void {
@@ -229,6 +261,8 @@ function createTables(db: SqlJsDatabase): void {
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_flag ON photos(flag)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_tags_event ON tags(event_id)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_tags_event_name ON tags(event_id, name)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag_id)`)
 }
 
 export function getDb(): SqlJsDatabase {
@@ -257,14 +291,16 @@ export function switchDatabase(newPath: string): void {
   try {
     next.run('PRAGMA foreign_keys=ON')
     createTables(next)
+    repairTagsWithBackup(next, nextPath)
     rebased = rebasePhotoPaths(next, newPath)
     // A failed save must not silently discard the current library's changes.
     // The active database can itself point to a folder that was removed
     // externally. Recreate its parent so switching libraries remains atomic
     // instead of surfacing "ENOENT ... photopeek.db" to settings:update.
     fs.mkdirSync(dirname(dbPath), { recursive: true })
-    fs.writeFileSync(dbPath, Buffer.from(db.export()))
-    fs.writeFileSync(nextPath + '.tmp', Buffer.from(next.export()))
+    fs.writeFileSync(dbPath + '.tmp', Buffer.from(exportDatabase(db)))
+    fs.renameSync(dbPath + '.tmp', dbPath)
+    fs.writeFileSync(nextPath + '.tmp', Buffer.from(exportDatabase(next)))
     fs.renameSync(nextPath + '.tmp', nextPath)
     updateLibraryPath(newPath)
   } catch (error) {
@@ -284,7 +320,7 @@ export function saveDatabase(): Uint8Array | null {
     return null
   }
   persistDatabase()
-  return db.export()
+  return exportDatabase(db)
 }
 
 export function closeDatabase(): void {

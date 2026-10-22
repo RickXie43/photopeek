@@ -4,6 +4,8 @@ directories:
   buildResources: build
 compression: normal
 files:
+  - out/**
+  - resources/**
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'

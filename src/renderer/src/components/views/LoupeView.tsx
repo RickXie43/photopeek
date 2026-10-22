@@ -11,7 +11,7 @@ import {
   Trash2,
   Upload
 } from 'lucide-react'
-import type { PhotoVersion } from '../../types/photo'
+import type { PhotoVersion, Tag as PhotoTagDefinition } from '../../types/photo'
 import { cn } from '../../lib/cn'
 
 /** Format file size */
@@ -34,17 +34,36 @@ interface ComparedVersion {
   url: string
 }
 
+type DisplayTag = Pick<PhotoTagDefinition, 'id' | 'name' | 'color'>
+
+interface TagState {
+  photoTags: DisplayTag[]
+  eventTags: DisplayTag[]
+  warning?: string
+}
+
 export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Element {
   const { photos, selectedPhotoIds, selectPhoto } = usePhotoStore()
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const [photoTags, setPhotoTags] = useState<
-    Record<string, { id: string; name: string; color: string }[]>
-  >({})
-  const [eventTags, setEventTags] = useState<{ id: string; name: string; color: string }[]>([])
+  const [photoTags, setPhotoTags] = useState<Record<string, DisplayTag[]>>({})
+  const [eventTags, setEventTags] = useState<DisplayTag[]>([])
+  const [tagError, setTagError] = useState('')
   const [tagMenuOpen, setTagMenuOpen] = useState(false)
+  const tagQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const tagMutationRevisionRef = useRef(0)
+  const pendingTagMutationsRef = useRef(0)
+  const tagLoadRequestRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // ── Version state ──────────────────────────────────────────────────────
   const [versions, setVersions] = useState<PhotoVersion[]>([])
@@ -106,35 +125,80 @@ export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Eleme
 
   // Load tags for the current photo and event
   useEffect(() => {
-    if (!photo) return
+    if (!photo) {
+      setEventTags([])
+      return
+    }
+    let cancelled = false
     const loadTags = async (): Promise<void> => {
+      const request = ++tagLoadRequestRef.current
+      const revision = tagMutationRevisionRef.current
       try {
         const [ptags, etags] = await Promise.all([
-          window.electron.ipcRenderer.invoke('tags:listForPhoto', photo.id) as Promise<
-            { id: string; name: string; color: string }[]
-          >,
-          window.electron.ipcRenderer.invoke('tags:list', photo.eventId) as Promise<
-            { id: string; name: string; color: string }[]
-          >
+          window.electron.ipcRenderer.invoke('tags:listForPhoto', photo.id) as Promise<DisplayTag[]>,
+          window.electron.ipcRenderer.invoke('tags:list', photo.eventId) as Promise<DisplayTag[]>
         ])
+        // A read started before a mutation (or for an old selection) must not
+        // overwrite the authoritative state returned by that mutation.
+        if (
+          cancelled || request !== tagLoadRequestRef.current ||
+          revision !== tagMutationRevisionRef.current || pendingTagMutationsRef.current > 0
+        ) return
         setPhotoTags((prev) => ({ ...prev, [photo.id]: ptags }))
         setEventTags(etags)
-      } catch {}
+      } catch (error) {
+        if (!cancelled && request === tagLoadRequestRef.current && mountedRef.current) {
+          setTagError(error instanceof Error ? error.message : '读取标签失败，请重试')
+        }
+      }
     }
     loadTags()
+    window.addEventListener('refresh-tags', loadTags)
+    return () => {
+      cancelled = true
+      window.removeEventListener('refresh-tags', loadTags)
+    }
   }, [photo?.id, photo?.eventId])
 
   const currentTags = photo ? photoTags[photo.id] || [] : []
   const [nickname, setNickname] = useState('')
 
-  // Load nickname from settings
+  // Settings can change while the same loupe stays open.
   useEffect(() => {
-    window.electron.ipcRenderer
-      .invoke('settings:get')
-      .then((r: unknown) => {
-        setNickname((r as any).nickname || '')
-      })
-      .catch(() => {})
+    let cancelled = false
+    let settingsRevision = 0
+    const loadNickname = async (): Promise<void> => {
+      const revision = ++settingsRevision
+      try {
+        const settings = (await window.electron.ipcRenderer.invoke('settings:get')) as {
+          nickname?: string
+        }
+        if (!cancelled && revision === settingsRevision) {
+          const nextNickname = (settings.nickname || '').trim()
+          nicknameRef.current = nextNickname
+          setNickname(nextNickname)
+        }
+      } catch (error) {
+        if (!cancelled) setTagError(error instanceof Error ? error.message : '读取昵称失败，请重试')
+      }
+    }
+    const handleSettingsChanged = (event: Event): void => {
+      const settings = (event as CustomEvent<{ nickname?: string }>).detail
+      if (settings && typeof settings.nickname === 'string') {
+        settingsRevision++
+        const nextNickname = settings.nickname.trim()
+        nicknameRef.current = nextNickname
+        setNickname(nextNickname)
+      } else {
+        void loadNickname()
+      }
+    }
+    void loadNickname()
+    window.addEventListener('settings-changed', handleSettingsChanged)
+    return () => {
+      cancelled = true
+      window.removeEventListener('settings-changed', handleSettingsChanged)
+    }
   }, [])
 
   // Keep a ref to current photo ID for the async toggle function
@@ -143,39 +207,48 @@ export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Eleme
   photoIdRef.current = photo?.id
   eventIdRef.current = photo?.eventId
 
-  const toggleNicknameTag = useCallback(async (): Promise<void> => {
+  // Preserve every real key press, including its photo and nickname at the
+  // time of the press. Serialize writes so rapid presses cannot race.
+  const queueTagMutation = useCallback((
+    pid: string,
+    eid: string,
+    mutate: () => Promise<TagState>
+  ): Promise<void> => {
+    pendingTagMutationsRef.current++
+    tagMutationRevisionRef.current++
+    const run = async (): Promise<void> => {
+      if (mountedRef.current) setTagError('')
+      try {
+        const result = await mutate()
+        tagMutationRevisionRef.current++
+        if (mountedRef.current) {
+          setPhotoTags((prev) => ({ ...prev, [pid]: result.photoTags }))
+          if (eventIdRef.current === eid) setEventTags(result.eventTags)
+          setTagError(result.warning || '')
+        }
+      } catch (error) {
+        console.error('[LoupeView] Failed to update tags:', error)
+        if (mountedRef.current) {
+          setTagError(error instanceof Error ? error.message : '修改标签失败，请重试')
+        }
+      } finally {
+        pendingTagMutationsRef.current--
+        window.dispatchEvent(new Event('refresh-tags'))
+      }
+    }
+    tagQueueRef.current = tagQueueRef.current.then(run, run)
+    return tagQueueRef.current
+  }, [])
+
+  const toggleNicknameTag = useCallback((): Promise<void> => {
     const pid = photoIdRef.current
     const eid = eventIdRef.current
-    const nick = nicknameRef.current
-    if (!pid || !eid || !nick) return
-    try {
-      // Find or create tag with nickname via a single IPC call
-      let tag = eventTagsRef.current?.find((t: { name: string }) => t.name === nick)
-      if (!tag) {
-        const created = (await window.electron.ipcRenderer.invoke('tags:create', {
-          eventId: eid,
-          name: nick
-        })) as { id: string; name: string; color: string; error?: string }
-        if (created.error) return
-        tag = created
-      }
-
-      await window.electron.ipcRenderer.invoke('tags:toggleOnPhoto', {
-        photoId: pid,
-        tagId: tag.id,
-        eventId: eid
-      })
-
-      // Reload photo tags
-      const ptags = (await window.electron.ipcRenderer.invoke('tags:listForPhoto', pid)) as {
-        id: string
-        name: string
-        color: string
-      }[]
-      setPhotoTags((prev) => ({ ...prev, [pid]: ptags }))
-      window.dispatchEvent(new Event('refresh-tags'))
-    } catch {}
-  }, []) // intentionally no deps — all values via refs
+    const nick = nicknameRef.current.trim()
+    if (!pid || !eid || !nick) return Promise.resolve()
+    return queueTagMutation(pid, eid, () => window.electron.ipcRenderer.invoke(
+      'tags:toggleNicknameOnPhoto', { photoId: pid, eventId: eid, nickname: nick }
+    ) as Promise<TagState>)
+  }, [queueTagMutation])
 
   // Navigate to photo by index
   const goTo = useCallback(
@@ -195,21 +268,26 @@ export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Eleme
   const toggleNicknameTagRef = useRef(toggleNicknameTag)
   const goToRef = useRef(goTo)
   const nicknameRef = useRef(nickname)
-  const eventTagsRef = useRef(eventTags)
   const versionsRef = useRef(versions)
   onCloseRef.current = onClose
   currentIndexRef.current = currentIndex
   toggleNicknameTagRef.current = toggleNicknameTag
   goToRef.current = goTo
   nicknameRef.current = nickname
-  eventTagsRef.current = eventTags
   versionsRef.current = versions
 
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
-      // Skip if an input or textarea is focused
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      const target = e.target instanceof HTMLElement ? e.target : null
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      const isEditable = (element: HTMLElement | null): boolean => !!element && (
+        !!element.closest('input, textarea, select') || element.isContentEditable
+      )
+      if (
+        isEditable(target) || isEditable(active) || e.isComposing ||
+        e.ctrlKey || e.metaKey || e.altKey ||
+        document.querySelector('[role="dialog"][aria-modal="true"]')
+      ) return
 
       if (e.key === 'Escape') {
         onCloseRef.current()
@@ -254,8 +332,10 @@ export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Eleme
         }
         return
       }
-      if (e.key === ' ' || e.key === 'Space') {
+      if (e.key === ' ' || e.code === 'Space') {
+        if (e.defaultPrevented) return
         e.preventDefault()
+        if (e.repeat) return
         if (nicknameRef.current) {
           toggleNicknameTagRef.current()
         } else {
@@ -529,6 +609,12 @@ export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Eleme
           </div>
         </div>
 
+        {tagError && (
+          <div role="alert" className="px-4 py-2 bg-red-950/80 text-red-200 text-xs shrink-0">
+            {tagError}
+          </div>
+        )}
+
         {/* Tag menu dropdown */}
         {tagMenuOpen && (
           <div className="absolute top-10 right-4 z-50 bg-[#2a2a2a] border border-gray-600 rounded-lg shadow-xl p-2 min-w-[160px]">
@@ -541,22 +627,19 @@ export function LoupeView({ onClose }: { onClose: () => void }): React.JSX.Eleme
                 return (
                   <button
                     key={tag.id}
-                    onClick={async () => {
-                      try {
-                        const res = (await window.electron.ipcRenderer.invoke(
-                          'tags:toggleOnPhoto',
-                          {
-                            photoId: photo.id,
-                            tagId: tag.id,
-                            eventId: photo.eventId
-                          }
-                        )) as { hasTag: boolean }
-                        const newTags = res.hasTag
-                          ? [...currentTags, tag]
-                          : currentTags.filter((t) => t.id !== tag.id)
-                        setPhotoTags((prev) => ({ ...prev, [photo.id]: newTags }))
-                        window.dispatchEvent(new Event('refresh-tags'))
-                      } catch {}
+                    onClick={() => {
+                      const pid = photo.id
+                      const eid = photo.eventId
+                      void queueTagMutation(pid, eid, async () => {
+                        await window.electron.ipcRenderer.invoke('tags:toggleOnPhoto', {
+                          photoId: pid, tagId: tag.id, eventId: eid
+                        })
+                        const [ptags, etags] = await Promise.all([
+                          window.electron.ipcRenderer.invoke('tags:listForPhoto', pid),
+                          window.electron.ipcRenderer.invoke('tags:list', eid)
+                        ])
+                        return { photoTags: ptags as DisplayTag[], eventTags: etags as DisplayTag[] }
+                      })
                     }}
                     className="w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded hover:bg-white/10 text-left"
                   >

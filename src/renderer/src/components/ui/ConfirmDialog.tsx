@@ -99,6 +99,9 @@ export function ConfirmDialog(): React.JSX.Element | null {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={options.title}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40"
       onKeyDown={handleKeyDown}
     >
